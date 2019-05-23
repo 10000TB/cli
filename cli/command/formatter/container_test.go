@@ -10,7 +10,9 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/pkg/stringid"
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
+	"gotest.tools/golden"
 )
 
 func TestContainerPsContext(t *testing.T) {
@@ -64,7 +66,7 @@ func TestContainerPsContext(t *testing.T) {
 					Source: "/a/path",
 				},
 			},
-		}, true, "this-is-a-lo...", ctx.Mounts},
+		}, true, "this-is-a-long…", ctx.Mounts},
 		{types.Container{
 			Mounts: []types.MountPoint{
 				{
@@ -226,13 +228,10 @@ size: 0B
 			Context{Format: NewContainerFormat("{{.Image}}", false, true)},
 			"ubuntu\nubuntu\n",
 		},
-		// Special headers for customerized table format
+		// Special headers for customized table format
 		{
 			Context{Format: NewContainerFormat(`table {{truncate .ID 5}}\t{{json .Image}} {{.RunningFor}}/{{title .Status}}/{{pad .Ports 2 2}}.{{upper .Names}} {{lower .Status}}`, false, true)},
-			`CONTAINER ID        IMAGE CREATED/STATUS/  PORTS  .NAMES STATUS
-conta               "ubuntu" 24 hours ago//.FOOBAR_BAZ 
-conta               "ubuntu" 24 hours ago//.FOOBAR_BAR 
-`,
+			string(golden.Get(t, "container-context-write-special-headers.golden")),
 		},
 	}
 
@@ -245,9 +244,9 @@ conta               "ubuntu" 24 hours ago//.FOOBAR_BAR
 		testcase.context.Output = out
 		err := ContainerWrite(testcase.context, containers)
 		if err != nil {
-			assert.EqualError(t, err, testcase.expected)
+			assert.Error(t, err, testcase.expected)
 		} else {
-			assert.Equal(t, testcase.expected, out.String())
+			assert.Check(t, is.Equal(testcase.expected, out.String()))
 		}
 	}
 }
@@ -306,7 +305,7 @@ func TestContainerContextWriteWithNoContainers(t *testing.T) {
 
 	for _, context := range contexts {
 		ContainerWrite(context.context, containers)
-		assert.Equal(t, context.expected, out.String())
+		assert.Check(t, is.Equal(context.expected, out.String()))
 		// Clean buffer
 		out.Reset()
 	}
@@ -357,12 +356,11 @@ func TestContainerContextWriteJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		t.Logf("Output: line %d: %s", i, line)
+		msg := fmt.Sprintf("Output: line %d: %s", i, line)
 		var m map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &m); err != nil {
-			t.Fatal(err)
-		}
-		assert.Equal(t, expectedJSONs[i], m)
+		err := json.Unmarshal([]byte(line), &m)
+		assert.NilError(t, err, msg)
+		assert.Check(t, is.DeepEqual(expectedJSONs[i], m), msg)
 	}
 }
 
@@ -377,12 +375,11 @@ func TestContainerContextWriteJSONField(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		t.Logf("Output: line %d: %s", i, line)
+		msg := fmt.Sprintf("Output: line %d: %s", i, line)
 		var s string
-		if err := json.Unmarshal([]byte(line), &s); err != nil {
-			t.Fatal(err)
-		}
-		assert.Equal(t, containers[i].ID, s)
+		err := json.Unmarshal([]byte(line), &s)
+		assert.NilError(t, err, msg)
+		assert.Check(t, is.Equal(containers[i].ID, s), msg)
 	}
 }
 
@@ -409,5 +406,253 @@ func TestContainerBackCompat(t *testing.T) {
 			t.Fail()
 		}
 		buf.Reset()
+	}
+}
+
+type ports struct {
+	ports    []types.Port
+	expected string
+}
+
+// nolint: lll
+func TestDisplayablePorts(t *testing.T) {
+	cases := []ports{
+		{
+			[]types.Port{
+				{
+					PrivatePort: 9988,
+					Type:        "tcp",
+				},
+			},
+			"9988/tcp"},
+		{
+			[]types.Port{
+				{
+					PrivatePort: 9988,
+					Type:        "udp",
+				},
+			},
+			"9988/udp",
+		},
+		{
+			[]types.Port{
+				{
+					IP:          "0.0.0.0",
+					PrivatePort: 9988,
+					Type:        "tcp",
+				},
+			},
+			"0.0.0.0:0->9988/tcp",
+		},
+		{
+			[]types.Port{
+				{
+					PrivatePort: 9988,
+					PublicPort:  8899,
+					Type:        "tcp",
+				},
+			},
+			"9988/tcp",
+		},
+		{
+			[]types.Port{
+				{
+					IP:          "4.3.2.1",
+					PrivatePort: 9988,
+					PublicPort:  8899,
+					Type:        "tcp",
+				},
+			},
+			"4.3.2.1:8899->9988/tcp",
+		},
+		{
+			[]types.Port{
+				{
+					IP:          "4.3.2.1",
+					PrivatePort: 9988,
+					PublicPort:  9988,
+					Type:        "tcp",
+				},
+			},
+			"4.3.2.1:9988->9988/tcp",
+		},
+		{
+			[]types.Port{
+				{
+					PrivatePort: 9988,
+					Type:        "udp",
+				}, {
+					PrivatePort: 9988,
+					Type:        "udp",
+				},
+			},
+			"9988/udp, 9988/udp",
+		},
+		{
+			[]types.Port{
+				{
+					IP:          "1.2.3.4",
+					PublicPort:  9998,
+					PrivatePort: 9998,
+					Type:        "udp",
+				}, {
+					IP:          "1.2.3.4",
+					PublicPort:  9999,
+					PrivatePort: 9999,
+					Type:        "udp",
+				},
+			},
+			"1.2.3.4:9998-9999->9998-9999/udp",
+		},
+		{
+			[]types.Port{
+				{
+					IP:          "1.2.3.4",
+					PublicPort:  8887,
+					PrivatePort: 9998,
+					Type:        "udp",
+				}, {
+					IP:          "1.2.3.4",
+					PublicPort:  8888,
+					PrivatePort: 9999,
+					Type:        "udp",
+				},
+			},
+			"1.2.3.4:8887->9998/udp, 1.2.3.4:8888->9999/udp",
+		},
+		{
+			[]types.Port{
+				{
+					PrivatePort: 9998,
+					Type:        "udp",
+				}, {
+					PrivatePort: 9999,
+					Type:        "udp",
+				},
+			},
+			"9998-9999/udp",
+		},
+		{
+			[]types.Port{
+				{
+					IP:          "1.2.3.4",
+					PrivatePort: 6677,
+					PublicPort:  7766,
+					Type:        "tcp",
+				}, {
+					PrivatePort: 9988,
+					PublicPort:  8899,
+					Type:        "udp",
+				},
+			},
+			"9988/udp, 1.2.3.4:7766->6677/tcp",
+		},
+		{
+			[]types.Port{
+				{
+					IP:          "1.2.3.4",
+					PrivatePort: 9988,
+					PublicPort:  8899,
+					Type:        "udp",
+				}, {
+					IP:          "1.2.3.4",
+					PrivatePort: 9988,
+					PublicPort:  8899,
+					Type:        "tcp",
+				}, {
+					IP:          "4.3.2.1",
+					PrivatePort: 2233,
+					PublicPort:  3322,
+					Type:        "tcp",
+				},
+			},
+			"4.3.2.1:3322->2233/tcp, 1.2.3.4:8899->9988/tcp, 1.2.3.4:8899->9988/udp",
+		},
+		{
+			[]types.Port{
+				{
+					PrivatePort: 9988,
+					PublicPort:  8899,
+					Type:        "udp",
+				}, {
+					IP:          "1.2.3.4",
+					PrivatePort: 6677,
+					PublicPort:  7766,
+					Type:        "tcp",
+				}, {
+					IP:          "4.3.2.1",
+					PrivatePort: 2233,
+					PublicPort:  3322,
+					Type:        "tcp",
+				},
+			},
+			"9988/udp, 4.3.2.1:3322->2233/tcp, 1.2.3.4:7766->6677/tcp",
+		},
+		{
+			[]types.Port{
+				{
+					PrivatePort: 80,
+					Type:        "tcp",
+				}, {
+					PrivatePort: 1024,
+					Type:        "tcp",
+				}, {
+					PrivatePort: 80,
+					Type:        "udp",
+				}, {
+					PrivatePort: 1024,
+					Type:        "udp",
+				}, {
+					IP:          "1.1.1.1",
+					PublicPort:  80,
+					PrivatePort: 1024,
+					Type:        "tcp",
+				}, {
+					IP:          "1.1.1.1",
+					PublicPort:  80,
+					PrivatePort: 1024,
+					Type:        "udp",
+				}, {
+					IP:          "1.1.1.1",
+					PublicPort:  1024,
+					PrivatePort: 80,
+					Type:        "tcp",
+				}, {
+					IP:          "1.1.1.1",
+					PublicPort:  1024,
+					PrivatePort: 80,
+					Type:        "udp",
+				}, {
+					IP:          "2.1.1.1",
+					PublicPort:  80,
+					PrivatePort: 1024,
+					Type:        "tcp",
+				}, {
+					IP:          "2.1.1.1",
+					PublicPort:  80,
+					PrivatePort: 1024,
+					Type:        "udp",
+				}, {
+					IP:          "2.1.1.1",
+					PublicPort:  1024,
+					PrivatePort: 80,
+					Type:        "tcp",
+				}, {
+					IP:          "2.1.1.1",
+					PublicPort:  1024,
+					PrivatePort: 80,
+					Type:        "udp",
+				}, {
+					PrivatePort: 12345,
+					Type:        "sctp",
+				},
+			},
+			"80/tcp, 80/udp, 1024/tcp, 1024/udp, 12345/sctp, 1.1.1.1:1024->80/tcp, 1.1.1.1:1024->80/udp, 2.1.1.1:1024->80/tcp, 2.1.1.1:1024->80/udp, 1.1.1.1:80->1024/tcp, 1.1.1.1:80->1024/udp, 2.1.1.1:80->1024/tcp, 2.1.1.1:80->1024/udp",
+		},
+	}
+
+	for _, port := range cases {
+		actual := DisplayablePorts(port.ports)
+		assert.Check(t, is.Equal(port.expected, actual))
 	}
 }

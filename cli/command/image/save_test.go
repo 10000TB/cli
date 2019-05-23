@@ -1,18 +1,16 @@
 package image
 
 import (
-	"bytes"
 	"io"
 	"io/ioutil"
 	"os"
 	"strings"
 	"testing"
 
-	"github.com/docker/cli/cli/internal/test"
-	"github.com/docker/docker/pkg/testutil"
+	"github.com/docker/cli/internal/test"
 	"github.com/pkg/errors"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
 )
 
 func TestNewSaveCommandErrors(t *testing.T) {
@@ -26,7 +24,7 @@ func TestNewSaveCommandErrors(t *testing.T) {
 		{
 			name:          "wrong args",
 			args:          []string{},
-			expectedError: "requires at least 1 argument(s).",
+			expectedError: "requires at least 1 argument.",
 		},
 		{
 			name:          "output to terminal",
@@ -43,14 +41,24 @@ func TestNewSaveCommandErrors(t *testing.T) {
 				return ioutil.NopCloser(strings.NewReader("")), errors.Errorf("error saving image")
 			},
 		},
+		{
+			name:          "output directory does not exist",
+			args:          []string{"-o", "fakedir/out.tar", "arg1"},
+			expectedError: "failed to save image: invalid output path: directory \"fakedir\" does not exist",
+		},
+		{
+			name:          "output file is irregular",
+			args:          []string{"-o", "/dev/null", "arg1"},
+			expectedError: "failed to save image: invalid output path: \"/dev/null\" must be a directory or a regular file",
+		},
 	}
 	for _, tc := range testCases {
-		cli := test.NewFakeCli(&fakeClient{imageSaveFunc: tc.imageSaveFunc}, new(bytes.Buffer))
+		cli := test.NewFakeCli(&fakeClient{imageSaveFunc: tc.imageSaveFunc})
 		cli.Out().SetIsTerminal(tc.isTerminal)
 		cmd := NewSaveCommand(cli)
 		cmd.SetOutput(ioutil.Discard)
 		cmd.SetArgs(tc.args)
-		testutil.ErrorContains(t, cmd.Execute(), tc.expectedError)
+		assert.ErrorContains(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
@@ -65,8 +73,8 @@ func TestNewSaveCommandSuccess(t *testing.T) {
 			args:       []string{"-o", "save_tmp_file", "arg1"},
 			isTerminal: true,
 			imageSaveFunc: func(images []string) (io.ReadCloser, error) {
-				require.Len(t, images, 1)
-				assert.Equal(t, "arg1", images[0])
+				assert.Assert(t, is.Len(images, 1))
+				assert.Check(t, is.Equal("arg1", images[0]))
 				return ioutil.NopCloser(strings.NewReader("")), nil
 			},
 			deferredFunc: func() {
@@ -77,9 +85,9 @@ func TestNewSaveCommandSuccess(t *testing.T) {
 			args:       []string{"arg1", "arg2"},
 			isTerminal: false,
 			imageSaveFunc: func(images []string) (io.ReadCloser, error) {
-				require.Len(t, images, 2)
-				assert.Equal(t, "arg1", images[0])
-				assert.Equal(t, "arg2", images[1])
+				assert.Assert(t, is.Len(images, 2))
+				assert.Check(t, is.Equal("arg1", images[0]))
+				assert.Check(t, is.Equal("arg2", images[1]))
 				return ioutil.NopCloser(strings.NewReader("")), nil
 			},
 		},
@@ -89,10 +97,10 @@ func TestNewSaveCommandSuccess(t *testing.T) {
 			imageSaveFunc: func(images []string) (io.ReadCloser, error) {
 				return ioutil.NopCloser(strings.NewReader("")), nil
 			},
-		}, new(bytes.Buffer)))
+		}))
 		cmd.SetOutput(ioutil.Discard)
 		cmd.SetArgs(tc.args)
-		assert.NoError(t, cmd.Execute())
+		assert.NilError(t, cmd.Execute())
 		if tc.deferredFunc != nil {
 			tc.deferredFunc()
 		}

@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"sort"
 
 	"github.com/docker/cli/cli"
@@ -9,14 +10,8 @@ import (
 	"github.com/docker/cli/opts"
 	"github.com/docker/docker/api/types"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
+	"vbom.ml/util/sortorder"
 )
-
-type byNetworkName []types.NetworkResource
-
-func (r byNetworkName) Len() int           { return len(r) }
-func (r byNetworkName) Swap(i, j int)      { r[i], r[j] = r[j], r[i] }
-func (r byNetworkName) Less(i, j int) bool { return r[i].Name < r[j].Name }
 
 type listOptions struct {
 	quiet   bool
@@ -25,7 +20,7 @@ type listOptions struct {
 	filter  opts.FilterOpt
 }
 
-func newListCommand(dockerCli *command.DockerCli) *cobra.Command {
+func newListCommand(dockerCli command.Cli) *cobra.Command {
 	options := listOptions{filter: opts.NewFilterOpt()}
 
 	cmd := &cobra.Command{
@@ -47,7 +42,7 @@ func newListCommand(dockerCli *command.DockerCli) *cobra.Command {
 	return cmd
 }
 
-func runList(dockerCli *command.DockerCli, options listOptions) error {
+func runList(dockerCli command.Cli, options listOptions) error {
 	client := dockerCli.Client()
 	listOptions := types.NetworkListOptions{Filters: options.filter.Value()}
 	networkResources, err := client.NetworkList(context.Background(), listOptions)
@@ -64,12 +59,14 @@ func runList(dockerCli *command.DockerCli, options listOptions) error {
 		}
 	}
 
-	sort.Sort(byNetworkName(networkResources))
+	sort.Slice(networkResources, func(i, j int) bool {
+		return sortorder.NaturalLess(networkResources[i].Name, networkResources[j].Name)
+	})
 
 	networksCtx := formatter.Context{
 		Output: dockerCli.Out(),
-		Format: formatter.NewNetworkFormat(format, options.quiet),
+		Format: NewFormat(format, options.quiet),
 		Trunc:  !options.noTrunc,
 	}
-	return formatter.NetworkWrite(networksCtx, networkResources)
+	return FormatWrite(networksCtx, networkResources)
 }

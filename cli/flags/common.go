@@ -5,10 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Sirupsen/logrus"
 	cliconfig "github.com/docker/cli/cli/config"
 	"github.com/docker/cli/opts"
 	"github.com/docker/go-connections/tlsconfig"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 )
 
@@ -26,6 +26,7 @@ const (
 var (
 	dockerCertPath  = os.Getenv("DOCKER_CERT_PATH")
 	dockerTLSVerify = os.Getenv("DOCKER_TLS_VERIFY") != ""
+	dockerTLS       = os.Getenv("DOCKER_TLS") != ""
 )
 
 // CommonOptions are options common to both the client and the daemon.
@@ -36,6 +37,7 @@ type CommonOptions struct {
 	TLS        bool
 	TLSVerify  bool
 	TLSOptions *tlsconfig.Options
+	Context    string
 }
 
 // NewCommonOptions returns a new CommonOptions
@@ -51,7 +53,7 @@ func (commonOpts *CommonOptions) InstallFlags(flags *pflag.FlagSet) {
 
 	flags.BoolVarP(&commonOpts.Debug, "debug", "D", false, "Enable debug mode")
 	flags.StringVarP(&commonOpts.LogLevel, "log-level", "l", "info", `Set the logging level ("debug"|"info"|"warn"|"error"|"fatal")`)
-	flags.BoolVar(&commonOpts.TLS, "tls", false, "Use TLS; implied by --tlsverify")
+	flags.BoolVar(&commonOpts.TLS, "tls", dockerTLS, "Use TLS; implied by --tlsverify")
 	flags.BoolVar(&commonOpts.TLSVerify, FlagTLSVerify, dockerTLSVerify, "Use TLS and verify the remote")
 
 	// TODO use flag flags.String("identity"}, "i", "", "Path to libtrust key file")
@@ -66,8 +68,11 @@ func (commonOpts *CommonOptions) InstallFlags(flags *pflag.FlagSet) {
 	flags.Var(opts.NewQuotedString(&tlsOptions.CertFile), "tlscert", "Path to TLS certificate file")
 	flags.Var(opts.NewQuotedString(&tlsOptions.KeyFile), "tlskey", "Path to TLS key file")
 
-	hostOpt := opts.NewNamedListOptsRef("hosts", &commonOpts.Hosts, opts.ValidateHost)
+	// opts.ValidateHost is not used here, so as to allow connection helpers
+	hostOpt := opts.NewNamedListOptsRef("hosts", &commonOpts.Hosts, nil)
 	flags.VarP(hostOpt, "host", "H", "Daemon socket(s) to connect to")
+	flags.StringVarP(&commonOpts.Context, "context", "c", "",
+		`Name of the context to use to connect to the daemon (overrides DOCKER_HOST env var and default context set with "docker context use")`)
 }
 
 // SetDefaultOptions sets default values for options after flag parsing is

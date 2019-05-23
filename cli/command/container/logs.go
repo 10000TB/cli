@@ -1,6 +1,7 @@
 package container
 
 import (
+	"context"
 	"io"
 
 	"github.com/docker/cli/cli"
@@ -8,12 +9,12 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type logsOptions struct {
 	follow     bool
 	since      string
+	until      string
 	timestamps bool
 	details    bool
 	tail       string
@@ -22,7 +23,7 @@ type logsOptions struct {
 }
 
 // NewLogsCommand creates a new cobra.Command for `docker logs`
-func NewLogsCommand(dockerCli *command.DockerCli) *cobra.Command {
+func NewLogsCommand(dockerCli command.Cli) *cobra.Command {
 	var opts logsOptions
 
 	cmd := &cobra.Command{
@@ -38,34 +39,37 @@ func NewLogsCommand(dockerCli *command.DockerCli) *cobra.Command {
 	flags := cmd.Flags()
 	flags.BoolVarP(&opts.follow, "follow", "f", false, "Follow log output")
 	flags.StringVar(&opts.since, "since", "", "Show logs since timestamp (e.g. 2013-01-02T13:23:37) or relative (e.g. 42m for 42 minutes)")
+	flags.StringVar(&opts.until, "until", "", "Show logs before a timestamp (e.g. 2013-01-02T13:23:37) or relative (e.g. 42m for 42 minutes)")
+	flags.SetAnnotation("until", "version", []string{"1.35"})
 	flags.BoolVarP(&opts.timestamps, "timestamps", "t", false, "Show timestamps")
 	flags.BoolVar(&opts.details, "details", false, "Show extra details provided to logs")
 	flags.StringVar(&opts.tail, "tail", "all", "Number of lines to show from the end of the logs")
 	return cmd
 }
 
-func runLogs(dockerCli *command.DockerCli, opts *logsOptions) error {
+func runLogs(dockerCli command.Cli, opts *logsOptions) error {
 	ctx := context.Background()
-
-	options := types.ContainerLogsOptions{
-		ShowStdout: true,
-		ShowStderr: true,
-		Since:      opts.since,
-		Timestamps: opts.timestamps,
-		Follow:     opts.follow,
-		Tail:       opts.tail,
-		Details:    opts.details,
-	}
-	responseBody, err := dockerCli.Client().ContainerLogs(ctx, opts.container, options)
-	if err != nil {
-		return err
-	}
-	defer responseBody.Close()
 
 	c, err := dockerCli.Client().ContainerInspect(ctx, opts.container)
 	if err != nil {
 		return err
 	}
+
+	options := types.ContainerLogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Since:      opts.since,
+		Until:      opts.until,
+		Timestamps: opts.timestamps,
+		Follow:     opts.follow,
+		Tail:       opts.tail,
+		Details:    opts.details,
+	}
+	responseBody, err := dockerCli.Client().ContainerLogs(ctx, c.ID, options)
+	if err != nil {
+		return err
+	}
+	defer responseBody.Close()
 
 	if c.Config.Tty {
 		_, err = io.Copy(dockerCli.Out(), responseBody)

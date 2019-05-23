@@ -1,20 +1,18 @@
 package config
 
 import (
-	"bytes"
 	"fmt"
 	"io/ioutil"
 	"testing"
 	"time"
 
-	"github.com/docker/cli/cli/internal/test"
+	"github.com/docker/cli/internal/test"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/pkg/errors"
 	// Import builders to get the builder function as package function
-	. "github.com/docker/cli/cli/internal/test/builders"
-	"github.com/docker/docker/pkg/testutil"
-	"github.com/docker/docker/pkg/testutil/golden"
-	"github.com/stretchr/testify/assert"
+	. "github.com/docker/cli/internal/test/builders"
+	"gotest.tools/assert"
+	"gotest.tools/golden"
 )
 
 func TestConfigInspectErrors(t *testing.T) {
@@ -53,18 +51,17 @@ func TestConfigInspectErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
 		cmd := newConfigInspectCommand(
 			test.NewFakeCli(&fakeClient{
 				configInspectFunc: tc.configInspectFunc,
-			}, buf),
+			}),
 		)
 		cmd.SetArgs(tc.args)
 		for key, value := range tc.flags {
 			cmd.Flags().Set(key, value)
 		}
 		cmd.SetOutput(ioutil.Discard)
-		testutil.ErrorContains(t, cmd.Execute(), tc.expectedError)
+		assert.ErrorContains(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
@@ -95,17 +92,11 @@ func TestConfigInspectWithoutFormat(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		cmd := newConfigInspectCommand(
-			test.NewFakeCli(&fakeClient{
-				configInspectFunc: tc.configInspectFunc,
-			}, buf),
-		)
+		cli := test.NewFakeCli(&fakeClient{configInspectFunc: tc.configInspectFunc})
+		cmd := newConfigInspectCommand(cli)
 		cmd.SetArgs(tc.args)
-		assert.NoError(t, cmd.Execute())
-		actual := buf.String()
-		expected := golden.Get(t, []byte(actual), fmt.Sprintf("config-inspect-without-format.%s.golden", tc.name))
-		testutil.EqualNormalizedString(t, testutil.RemoveSpace, actual, string(expected))
+		assert.NilError(t, cmd.Execute())
+		golden.Assert(t, cli.OutBuffer().String(), fmt.Sprintf("config-inspect-without-format.%s.golden", tc.name))
 	}
 }
 
@@ -135,18 +126,14 @@ func TestConfigInspectWithFormat(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		cmd := newConfigInspectCommand(
-			test.NewFakeCli(&fakeClient{
-				configInspectFunc: tc.configInspectFunc,
-			}, buf),
-		)
+		cli := test.NewFakeCli(&fakeClient{
+			configInspectFunc: tc.configInspectFunc,
+		})
+		cmd := newConfigInspectCommand(cli)
 		cmd.SetArgs(tc.args)
 		cmd.Flags().Set("format", tc.format)
-		assert.NoError(t, cmd.Execute())
-		actual := buf.String()
-		expected := golden.Get(t, []byte(actual), fmt.Sprintf("config-inspect-with-format.%s.golden", tc.name))
-		testutil.EqualNormalizedString(t, testutil.RemoveSpace, actual, string(expected))
+		assert.NilError(t, cmd.Execute())
+		golden.Assert(t, cli.OutBuffer().String(), fmt.Sprintf("config-inspect-with-format.%s.golden", tc.name))
 	}
 }
 
@@ -172,16 +159,14 @@ func TestConfigInspectPretty(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		cmd := newConfigInspectCommand(
-			test.NewFakeCli(&fakeClient{
-				configInspectFunc: tc.configInspectFunc,
-			}, buf))
+		cli := test.NewFakeCli(&fakeClient{
+			configInspectFunc: tc.configInspectFunc,
+		})
+		cmd := newConfigInspectCommand(cli)
+
 		cmd.SetArgs([]string{"configID"})
 		cmd.Flags().Set("pretty", "true")
-		assert.NoError(t, cmd.Execute())
-		actual := buf.String()
-		expected := golden.Get(t, []byte(actual), fmt.Sprintf("config-inspect-pretty.%s.golden", tc.name))
-		testutil.EqualNormalizedString(t, testutil.RemoveSpace, actual, string(expected))
+		assert.NilError(t, cmd.Execute())
+		golden.Assert(t, cli.OutBuffer().String(), fmt.Sprintf("config-inspect-pretty.%s.golden", tc.name))
 	}
 }

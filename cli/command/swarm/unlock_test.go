@@ -1,25 +1,22 @@
 package swarm
 
 import (
-	"bytes"
 	"io/ioutil"
 	"strings"
 	"testing"
 
-	"github.com/docker/cli/cli/command"
-	"github.com/docker/cli/cli/internal/test"
+	"github.com/docker/cli/cli/streams"
+	"github.com/docker/cli/internal/test"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/swarm"
-	"github.com/docker/docker/pkg/testutil"
 	"github.com/pkg/errors"
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
 )
 
 func TestSwarmUnlockErrors(t *testing.T) {
 	testCases := []struct {
 		name            string
 		args            []string
-		input           string
 		swarmUnlockFunc func(req swarm.UnlockRequest) error
 		infoFunc        func() (types.Info, error)
 		expectedError   string
@@ -27,7 +24,7 @@ func TestSwarmUnlockErrors(t *testing.T) {
 		{
 			name:          "too-many-args",
 			args:          []string{"foo"},
-			expectedError: "accepts no argument(s)",
+			expectedError: "accepts no arguments",
 		},
 		{
 			name: "is-not-part-of-a-swarm",
@@ -67,21 +64,19 @@ func TestSwarmUnlockErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
 		cmd := newUnlockCommand(
 			test.NewFakeCli(&fakeClient{
 				infoFunc:        tc.infoFunc,
 				swarmUnlockFunc: tc.swarmUnlockFunc,
-			}, buf))
+			}))
 		cmd.SetArgs(tc.args)
 		cmd.SetOutput(ioutil.Discard)
-		testutil.ErrorContains(t, cmd.Execute(), tc.expectedError)
+		assert.ErrorContains(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
 func TestSwarmUnlock(t *testing.T) {
 	input := "unlockKey"
-	buf := new(bytes.Buffer)
 	dockerCli := test.NewFakeCli(&fakeClient{
 		infoFunc: func() (types.Info, error) {
 			return types.Info{
@@ -96,8 +91,8 @@ func TestSwarmUnlock(t *testing.T) {
 			}
 			return nil
 		},
-	}, buf)
-	dockerCli.SetIn(command.NewInStream(ioutil.NopCloser(strings.NewReader(input))))
+	})
+	dockerCli.SetIn(streams.NewIn(ioutil.NopCloser(strings.NewReader(input))))
 	cmd := newUnlockCommand(dockerCli)
-	assert.NoError(t, cmd.Execute())
+	assert.NilError(t, cmd.Execute())
 }

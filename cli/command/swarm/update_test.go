@@ -1,21 +1,20 @@
 package swarm
 
 import (
-	"bytes"
 	"fmt"
 	"io/ioutil"
 	"testing"
 	"time"
 
-	"github.com/docker/cli/cli/internal/test"
+	"github.com/docker/cli/internal/test"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/pkg/errors"
+
 	// Import builders to get the builder function as package function
-	. "github.com/docker/cli/cli/internal/test/builders"
-	"github.com/docker/docker/pkg/testutil"
-	"github.com/docker/docker/pkg/testutil/golden"
-	"github.com/stretchr/testify/assert"
+	. "github.com/docker/cli/internal/test/builders"
+	"gotest.tools/assert"
+	"gotest.tools/golden"
 )
 
 func TestSwarmUpdateErrors(t *testing.T) {
@@ -31,7 +30,7 @@ func TestSwarmUpdateErrors(t *testing.T) {
 		{
 			name:          "too-many-args",
 			args:          []string{"foo"},
-			expectedError: "accepts no argument(s)",
+			expectedError: "accepts no arguments",
 		},
 		{
 			name: "swarm-inspect-error",
@@ -68,23 +67,25 @@ func TestSwarmUpdateErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
 		cmd := newUpdateCommand(
 			test.NewFakeCli(&fakeClient{
 				swarmInspectFunc:      tc.swarmInspectFunc,
 				swarmUpdateFunc:       tc.swarmUpdateFunc,
 				swarmGetUnlockKeyFunc: tc.swarmGetUnlockKeyFunc,
-			}, buf))
+			}))
 		cmd.SetArgs(tc.args)
 		for key, value := range tc.flags {
 			cmd.Flags().Set(key, value)
 		}
 		cmd.SetOutput(ioutil.Discard)
-		testutil.ErrorContains(t, cmd.Execute(), tc.expectedError)
+		assert.ErrorContains(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
 func TestSwarmUpdate(t *testing.T) {
+	swarmInfo := Swarm()
+	swarmInfo.ClusterInfo.TLSInfo.TrustRoot = "trustroot"
+
 	testCases := []struct {
 		name                  string
 		args                  []string
@@ -108,6 +109,9 @@ func TestSwarmUpdate(t *testing.T) {
 				flagAutolock:            "true",
 				flagQuiet:               "true",
 			},
+			swarmInspectFunc: func() (swarm.Swarm, error) {
+				return *swarmInfo, nil
+			},
 			swarmUpdateFunc: func(swarm swarm.Spec, flags swarm.UpdateFlags) error {
 				if *swarm.Orchestration.TaskHistoryRetentionLimit != 10 {
 					return errors.Errorf("historyLimit not correctly set")
@@ -126,7 +130,7 @@ func TestSwarmUpdate(t *testing.T) {
 				if swarm.CAConfig.NodeCertExpiry != certExpiryDuration {
 					return errors.Errorf("certExpiry not correctly set")
 				}
-				if len(swarm.CAConfig.ExternalCAs) != 1 {
+				if len(swarm.CAConfig.ExternalCAs) != 1 || swarm.CAConfig.ExternalCAs[0].CACert != "trustroot" {
 					return errors.Errorf("externalCA not correctly set")
 				}
 				if *swarm.Raft.KeepOldSnapshots != 10 {
@@ -164,21 +168,18 @@ func TestSwarmUpdate(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		cmd := newUpdateCommand(
-			test.NewFakeCli(&fakeClient{
-				swarmInspectFunc:      tc.swarmInspectFunc,
-				swarmUpdateFunc:       tc.swarmUpdateFunc,
-				swarmGetUnlockKeyFunc: tc.swarmGetUnlockKeyFunc,
-			}, buf))
+		cli := test.NewFakeCli(&fakeClient{
+			swarmInspectFunc:      tc.swarmInspectFunc,
+			swarmUpdateFunc:       tc.swarmUpdateFunc,
+			swarmGetUnlockKeyFunc: tc.swarmGetUnlockKeyFunc,
+		})
+		cmd := newUpdateCommand(cli)
 		cmd.SetArgs(tc.args)
 		for key, value := range tc.flags {
 			cmd.Flags().Set(key, value)
 		}
-		cmd.SetOutput(buf)
-		assert.NoError(t, cmd.Execute())
-		actual := buf.String()
-		expected := golden.Get(t, []byte(actual), fmt.Sprintf("update-%s.golden", tc.name))
-		testutil.EqualNormalizedString(t, testutil.RemoveSpace, actual, string(expected))
+		cmd.SetOutput(cli.OutBuffer())
+		assert.NilError(t, cmd.Execute())
+		golden.Assert(t, cli.OutBuffer().String(), fmt.Sprintf("update-%s.golden", tc.name))
 	}
 }

@@ -1,14 +1,15 @@
 package swarm
 
 import (
+	"context"
 	"fmt"
+	"io"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type unlockKeyOptions struct {
@@ -74,16 +75,15 @@ func runUnlockKey(dockerCli command.Cli, opts unlockKeyOptions) error {
 		return nil
 	}
 
-	printUnlockCommand(ctx, dockerCli, unlockKeyResp.UnlockKey)
+	printUnlockCommand(dockerCli.Out(), unlockKeyResp.UnlockKey)
 	return nil
 }
 
-func printUnlockCommand(ctx context.Context, dockerCli command.Cli, unlockKey string) {
+func printUnlockCommand(out io.Writer, unlockKey string) {
 	if len(unlockKey) > 0 {
-		fmt.Fprintf(dockerCli.Out(), "To unlock a swarm manager after it restarts, "+
+		fmt.Fprintf(out, "To unlock a swarm manager after it restarts, "+
 			"run the `docker swarm unlock`\ncommand and provide the following key:\n\n    %s\n\n"+
 			"Please remember to store this key in a password manager, since without it you\n"+
 			"will not be able to restart the manager.\n", unlockKey)
 	}
-	return
 }

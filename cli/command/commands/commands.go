@@ -2,12 +2,17 @@ package commands
 
 import (
 	"os"
+	"runtime"
 
 	"github.com/docker/cli/cli/command"
+	"github.com/docker/cli/cli/command/builder"
 	"github.com/docker/cli/cli/command/checkpoint"
 	"github.com/docker/cli/cli/command/config"
 	"github.com/docker/cli/cli/command/container"
+	"github.com/docker/cli/cli/command/context"
+	"github.com/docker/cli/cli/command/engine"
 	"github.com/docker/cli/cli/command/image"
+	"github.com/docker/cli/cli/command/manifest"
 	"github.com/docker/cli/cli/command/network"
 	"github.com/docker/cli/cli/command/node"
 	"github.com/docker/cli/cli/command/plugin"
@@ -17,12 +22,13 @@ import (
 	"github.com/docker/cli/cli/command/stack"
 	"github.com/docker/cli/cli/command/swarm"
 	"github.com/docker/cli/cli/command/system"
+	"github.com/docker/cli/cli/command/trust"
 	"github.com/docker/cli/cli/command/volume"
 	"github.com/spf13/cobra"
 )
 
 // AddCommands adds all the commands from cli/command to the root command
-func AddCommands(cmd *cobra.Command, dockerCli *command.DockerCli) {
+func AddCommands(cmd *cobra.Command, dockerCli command.Cli) {
 	cmd.AddCommand(
 		// checkpoint
 		checkpoint.NewCheckpointCommand(dockerCli),
@@ -38,11 +44,17 @@ func AddCommands(cmd *cobra.Command, dockerCli *command.DockerCli) {
 		image.NewImageCommand(dockerCli),
 		image.NewBuildCommand(dockerCli),
 
-		// node
-		node.NewNodeCommand(dockerCli),
+		// builder
+		builder.NewBuilderCommand(dockerCli),
+
+		// manifest
+		manifest.NewManifestCommand(dockerCli),
 
 		// network
 		network.NewNetworkCommand(dockerCli),
+
+		// node
+		node.NewNodeCommand(dockerCli),
 
 		// plugin
 		plugin.NewPluginCommand(dockerCli),
@@ -64,15 +76,21 @@ func AddCommands(cmd *cobra.Command, dockerCli *command.DockerCli) {
 
 		// stack
 		stack.NewStackCommand(dockerCli),
-		stack.NewTopLevelDeployCommand(dockerCli),
 
 		// swarm
 		swarm.NewSwarmCommand(dockerCli),
 
+		// trust
+		trust.NewTrustCommand(dockerCli),
+
 		// volume
 		volume.NewVolumeCommand(dockerCli),
 
+		// context
+		context.NewContextCommand(dockerCli),
+
 		// legacy commands may be hidden
+		hide(stack.NewTopLevelDeployCommand(dockerCli)),
 		hide(system.NewEventsCommand(dockerCli)),
 		hide(system.NewInfoCommand(dockerCli)),
 		hide(system.NewInspectCommand(dockerCli)),
@@ -108,7 +126,10 @@ func AddCommands(cmd *cobra.Command, dockerCli *command.DockerCli) {
 		hide(image.NewSaveCommand(dockerCli)),
 		hide(image.NewTagCommand(dockerCli)),
 	)
-
+	if runtime.GOOS == "linux" {
+		// engine
+		cmd.AddCommand(engine.NewEngineCommand(dockerCli))
+	}
 }
 
 func hide(cmd *cobra.Command) *cobra.Command {

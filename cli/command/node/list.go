@@ -1,13 +1,16 @@
 package node
 
 import (
+	"context"
+	"sort"
+
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/command/formatter"
 	"github.com/docker/cli/opts"
 	"github.com/docker/docker/api/types"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
+	"vbom.ml/util/sortorder"
 )
 
 type listOptions struct {
@@ -66,7 +69,10 @@ func runList(dockerCli command.Cli, options listOptions) error {
 
 	nodesCtx := formatter.Context{
 		Output: dockerCli.Out(),
-		Format: formatter.NewNodeFormat(format, options.quiet),
+		Format: NewFormat(format, options.quiet),
 	}
-	return formatter.NodeWrite(nodesCtx, nodes, info)
+	sort.Slice(nodes, func(i, j int) bool {
+		return sortorder.NaturalLess(nodes[i].Description.Hostname, nodes[j].Description.Hostname)
+	})
+	return FormatWrite(nodesCtx, nodes, info)
 }

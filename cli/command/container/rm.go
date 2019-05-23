@@ -1,6 +1,7 @@
 package container
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -9,7 +10,6 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type rmOptions struct {
@@ -21,7 +21,7 @@ type rmOptions struct {
 }
 
 // NewRmCommand creates a new cobra.Command for `docker rm`
-func NewRmCommand(dockerCli *command.DockerCli) *cobra.Command {
+func NewRmCommand(dockerCli command.Cli) *cobra.Command {
 	var opts rmOptions
 
 	cmd := &cobra.Command{
@@ -41,7 +41,7 @@ func NewRmCommand(dockerCli *command.DockerCli) *cobra.Command {
 	return cmd
 }
 
-func runRm(dockerCli *command.DockerCli, opts *rmOptions) error {
+func runRm(dockerCli command.Cli, opts *rmOptions) error {
 	ctx := context.Background()
 
 	var errs []string

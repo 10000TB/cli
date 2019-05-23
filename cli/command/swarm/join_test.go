@@ -1,17 +1,16 @@
 package swarm
 
 import (
-	"bytes"
 	"io/ioutil"
 	"strings"
 	"testing"
 
-	"github.com/docker/cli/cli/internal/test"
+	"github.com/docker/cli/internal/test"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/swarm"
-	"github.com/docker/docker/pkg/testutil"
 	"github.com/pkg/errors"
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
 )
 
 func TestSwarmJoinErrors(t *testing.T) {
@@ -49,15 +48,14 @@ func TestSwarmJoinErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
 		cmd := newJoinCommand(
 			test.NewFakeCli(&fakeClient{
 				swarmJoinFunc: tc.swarmJoinFunc,
 				infoFunc:      tc.infoFunc,
-			}, buf))
+			}))
 		cmd.SetArgs(tc.args)
 		cmd.SetOutput(ioutil.Discard)
-		testutil.ErrorContains(t, cmd.Execute(), tc.expectedError)
+		assert.ErrorContains(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
@@ -91,13 +89,12 @@ func TestSwarmJoin(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		cmd := newJoinCommand(
-			test.NewFakeCli(&fakeClient{
-				infoFunc: tc.infoFunc,
-			}, buf))
+		cli := test.NewFakeCli(&fakeClient{
+			infoFunc: tc.infoFunc,
+		})
+		cmd := newJoinCommand(cli)
 		cmd.SetArgs([]string{"remote"})
-		assert.NoError(t, cmd.Execute())
-		assert.Equal(t, strings.TrimSpace(buf.String()), tc.expected)
+		assert.NilError(t, cmd.Execute())
+		assert.Check(t, is.Equal(strings.TrimSpace(cli.OutBuffer().String()), tc.expected))
 	}
 }

@@ -1,16 +1,15 @@
 package image
 
 import (
-	"bytes"
 	"fmt"
 	"io/ioutil"
 	"testing"
 
-	"github.com/docker/cli/cli/internal/test"
+	"github.com/docker/cli/internal/test"
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/pkg/testutil"
-	"github.com/docker/docker/pkg/testutil/golden"
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
+	"gotest.tools/golden"
 )
 
 func TestNewInspectCommandErrors(t *testing.T) {
@@ -22,15 +21,14 @@ func TestNewInspectCommandErrors(t *testing.T) {
 		{
 			name:          "wrong-args",
 			args:          []string{},
-			expectedError: "requires at least 1 argument(s).",
+			expectedError: "requires at least 1 argument.",
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		cmd := newInspectCommand(test.NewFakeCli(&fakeClient{}, buf))
+		cmd := newInspectCommand(test.NewFakeCli(&fakeClient{}))
 		cmd.SetOutput(ioutil.Discard)
 		cmd.SetArgs(tc.args)
-		testutil.ErrorContains(t, cmd.Execute(), tc.expectedError)
+		assert.ErrorContains(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
@@ -48,7 +46,7 @@ func TestNewInspectCommandSuccess(t *testing.T) {
 			imageCount: 1,
 			imageInspectFunc: func(image string) (types.ImageInspect, []byte, error) {
 				imageInspectInvocationCount++
-				assert.Equal(t, "image", image)
+				assert.Check(t, is.Equal("image", image))
 				return types.ImageInspect{}, nil, nil
 			},
 		},
@@ -68,9 +66,9 @@ func TestNewInspectCommandSuccess(t *testing.T) {
 			imageInspectFunc: func(image string) (types.ImageInspect, []byte, error) {
 				imageInspectInvocationCount++
 				if imageInspectInvocationCount == 1 {
-					assert.Equal(t, "image1", image)
+					assert.Check(t, is.Equal("image1", image))
 				} else {
-					assert.Equal(t, "image2", image)
+					assert.Check(t, is.Equal("image2", image))
 				}
 				return types.ImageInspect{}, nil, nil
 			},
@@ -78,15 +76,13 @@ func TestNewInspectCommandSuccess(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		imageInspectInvocationCount = 0
-		buf := new(bytes.Buffer)
-		cmd := newInspectCommand(test.NewFakeCli(&fakeClient{imageInspectFunc: tc.imageInspectFunc}, buf))
+		cli := test.NewFakeCli(&fakeClient{imageInspectFunc: tc.imageInspectFunc})
+		cmd := newInspectCommand(cli)
 		cmd.SetOutput(ioutil.Discard)
 		cmd.SetArgs(tc.args)
 		err := cmd.Execute()
-		assert.NoError(t, err)
-		actual := buf.String()
-		expected := string(golden.Get(t, []byte(actual), fmt.Sprintf("inspect-command-success.%s.golden", tc.name))[:])
-		testutil.EqualNormalizedString(t, testutil.RemoveSpace, actual, expected)
-		assert.Equal(t, imageInspectInvocationCount, tc.imageCount)
+		assert.NilError(t, err)
+		golden.Assert(t, cli.OutBuffer().String(), fmt.Sprintf("inspect-command-success.%s.golden", tc.name))
+		assert.Check(t, is.Equal(imageInspectInvocationCount, tc.imageCount))
 	}
 }

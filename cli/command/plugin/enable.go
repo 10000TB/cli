@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/docker/cli/cli"
@@ -8,7 +9,6 @@ import (
 	"github.com/docker/docker/api/types"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type enableOpts struct {
@@ -16,7 +16,7 @@ type enableOpts struct {
 	name    string
 }
 
-func newEnableCommand(dockerCli *command.DockerCli) *cobra.Command {
+func newEnableCommand(dockerCli command.Cli) *cobra.Command {
 	var opts enableOpts
 
 	cmd := &cobra.Command{
@@ -30,11 +30,11 @@ func newEnableCommand(dockerCli *command.DockerCli) *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	flags.IntVar(&opts.timeout, "timeout", 0, "HTTP client timeout (in seconds)")
+	flags.IntVar(&opts.timeout, "timeout", 30, "HTTP client timeout (in seconds)")
 	return cmd
 }
 
-func runEnable(dockerCli *command.DockerCli, opts *enableOpts) error {
+func runEnable(dockerCli command.Cli, opts *enableOpts) error {
 	name := opts.name
 	if opts.timeout < 0 {
 		return errors.Errorf("negative timeout %d is invalid", opts.timeout)

@@ -1,16 +1,18 @@
-package client
+package client // import "github.com/docker/docker/client"
 
 import (
+	"context"
 	"encoding/json"
 	"net/url"
 	"strconv"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/swarm"
-	"golang.org/x/net/context"
 )
 
-// ServiceUpdate updates a Service.
+// ServiceUpdate updates a Service. The version number is required to avoid conflicting writes.
+// It should be the value as set *before* the update. You can find this value in the Meta field
+// of swarm.Service, which can be found using ServiceInspectWithRaw.
 func (cli *Client) ServiceUpdate(ctx context.Context, serviceID string, version swarm.Version, service swarm.ServiceSpec, options types.ServiceUpdateOptions) (types.ServiceUpdateResponse, error) {
 	var (
 		query   = url.Values{}
@@ -35,24 +37,49 @@ func (cli *Client) ServiceUpdate(ctx context.Context, serviceID string, version 
 
 	query.Set("version", strconv.FormatUint(version.Index, 10))
 
-	// Contact the registry to retrieve digest and platform information
-	// This happens only when the image has changed
-	if options.QueryRegistry {
-		distributionInspect, err := cli.DistributionInspect(ctx, service.TaskTemplate.ContainerSpec.Image, options.EncodedRegistryAuth)
-		distErr = err
-		if err == nil {
-			// now pin by digest if the image doesn't already contain a digest
-			img := imageWithDigestString(service.TaskTemplate.ContainerSpec.Image, distributionInspect.Descriptor.Digest)
+	if err := validateServiceSpec(service); err != nil {
+		return types.ServiceUpdateResponse{}, err
+	}
+
+	var imgPlatforms []swarm.Platform
+	// ensure that the image is tagged
+	if service.TaskTemplate.ContainerSpec != nil {
+		if taggedImg := imageWithTagString(service.TaskTemplate.ContainerSpec.Image); taggedImg != "" {
+			service.TaskTemplate.ContainerSpec.Image = taggedImg
+		}
+		if options.QueryRegistry {
+			var img string
+			img, imgPlatforms, distErr = imageDigestAndPlatforms(ctx, cli, service.TaskTemplate.ContainerSpec.Image, options.EncodedRegistryAuth)
 			if img != "" {
 				service.TaskTemplate.ContainerSpec.Image = img
 			}
-			// add platforms that are compatible with the service
-			service.TaskTemplate.Placement = updateServicePlatforms(service.TaskTemplate.Placement, distributionInspect)
 		}
+	}
+
+	// ensure that the image is tagged
+	if service.TaskTemplate.PluginSpec != nil {
+		if taggedImg := imageWithTagString(service.TaskTemplate.PluginSpec.Remote); taggedImg != "" {
+			service.TaskTemplate.PluginSpec.Remote = taggedImg
+		}
+		if options.QueryRegistry {
+			var img string
+			img, imgPlatforms, distErr = imageDigestAndPlatforms(ctx, cli, service.TaskTemplate.PluginSpec.Remote, options.EncodedRegistryAuth)
+			if img != "" {
+				service.TaskTemplate.PluginSpec.Remote = img
+			}
+		}
+	}
+
+	if service.TaskTemplate.Placement == nil && len(imgPlatforms) > 0 {
+		service.TaskTemplate.Placement = &swarm.Placement{}
+	}
+	if len(imgPlatforms) > 0 {
+		service.TaskTemplate.Placement.Platforms = imgPlatforms
 	}
 
 	var response types.ServiceUpdateResponse
 	resp, err := cli.post(ctx, "/services/"+serviceID+"/update", query, service, headers)
+	defer ensureReaderClosed(resp)
 	if err != nil {
 		return response, err
 	}
@@ -63,6 +90,5 @@ func (cli *Client) ServiceUpdate(ctx context.Context, serviceID string, version 
 		response.Warnings = append(response.Warnings, digestWarning(service.TaskTemplate.ContainerSpec.Image))
 	}
 
-	ensureReaderClosed(resp)
 	return response, err
 }

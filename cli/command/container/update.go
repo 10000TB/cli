@@ -1,6 +1,7 @@
 package container
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,10 +9,8 @@ import (
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/opts"
 	containertypes "github.com/docker/docker/api/types/container"
-	runconfigopts "github.com/docker/docker/runconfig/opts"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type updateOptions struct {
@@ -28,6 +27,7 @@ type updateOptions struct {
 	memorySwap         opts.MemSwapBytes
 	kernelMemory       opts.MemBytes
 	restartPolicy      string
+	pidsLimit          int64
 	cpus               opts.NanoCPUs
 
 	nFlag int
@@ -36,7 +36,7 @@ type updateOptions struct {
 }
 
 // NewUpdateCommand creates a new cobra.Command for `docker update`
-func NewUpdateCommand(dockerCli *command.DockerCli) *cobra.Command {
+func NewUpdateCommand(dockerCli command.Cli) *cobra.Command {
 	var options updateOptions
 
 	cmd := &cobra.Command{
@@ -66,6 +66,8 @@ func NewUpdateCommand(dockerCli *command.DockerCli) *cobra.Command {
 	flags.Var(&options.memorySwap, "memory-swap", "Swap limit equal to memory plus swap: '-1' to enable unlimited swap")
 	flags.Var(&options.kernelMemory, "kernel-memory", "Kernel memory limit")
 	flags.StringVar(&options.restartPolicy, "restart", "", "Restart policy to apply when a container exits")
+	flags.Int64Var(&options.pidsLimit, "pids-limit", 0, "Tune container pids limit (set -1 for unlimited)")
+	flags.SetAnnotation("pids-limit", "version", []string{"1.40"})
 
 	flags.Var(&options.cpus, "cpus", "Number of CPUs")
 	flags.SetAnnotation("cpus", "version", []string{"1.29"})
@@ -73,7 +75,7 @@ func NewUpdateCommand(dockerCli *command.DockerCli) *cobra.Command {
 	return cmd
 }
 
-func runUpdate(dockerCli *command.DockerCli, options *updateOptions) error {
+func runUpdate(dockerCli command.Cli, options *updateOptions) error {
 	var err error
 
 	if options.nFlag == 0 {
@@ -82,7 +84,7 @@ func runUpdate(dockerCli *command.DockerCli, options *updateOptions) error {
 
 	var restartPolicy containertypes.RestartPolicy
 	if options.restartPolicy != "" {
-		restartPolicy, err = runconfigopts.ParseRestartPolicy(options.restartPolicy)
+		restartPolicy, err = opts.ParseRestartPolicy(options.restartPolicy)
 		if err != nil {
 			return err
 		}
@@ -102,6 +104,10 @@ func runUpdate(dockerCli *command.DockerCli, options *updateOptions) error {
 		CPURealtimePeriod:  options.cpuRealtimePeriod,
 		CPURealtimeRuntime: options.cpuRealtimeRuntime,
 		NanoCPUs:           options.cpus.Value(),
+	}
+
+	if options.pidsLimit != 0 {
+		resources.PidsLimit = &options.pidsLimit
 	}
 
 	updateConfig := containertypes.UpdateConfig{

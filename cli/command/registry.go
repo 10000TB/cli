@@ -2,6 +2,7 @@ package command
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -10,8 +11,9 @@ import (
 	"runtime"
 	"strings"
 
-	"golang.org/x/net/context"
-
+	configtypes "github.com/docker/cli/cli/config/types"
+	"github.com/docker/cli/cli/debug"
+	"github.com/docker/cli/cli/streams"
 	"github.com/docker/distribution/reference"
 	"github.com/docker/docker/api/types"
 	registrytypes "github.com/docker/docker/api/types/registry"
@@ -26,13 +28,22 @@ func ElectAuthServer(ctx context.Context, cli Cli) string {
 	// used. This is essential in cross-platforms environment, where for
 	// example a Linux client might be interacting with a Windows daemon, hence
 	// the default registry URL might be Windows specific.
-	serverAddress := registry.IndexServer
-	if info, err := cli.Client().Info(ctx); err != nil {
-		fmt.Fprintf(cli.Out(), "Warning: failed to get default registry endpoint from daemon (%v). Using system default: %s\n", err, serverAddress)
-	} else {
-		serverAddress = info.IndexServerAddress
+	info, err := cli.Client().Info(ctx)
+	if err != nil {
+		// Daemon is not responding so use system default.
+		if debug.IsEnabled() {
+			// Only report the warning if we're in debug mode to prevent nagging during engine initialization workflows
+			fmt.Fprintf(cli.Err(), "Warning: failed to get default registry endpoint from daemon (%v). Using system default: %s\n", err, registry.IndexServer)
+		}
+		return registry.IndexServer
 	}
-	return serverAddress
+	if info.IndexServerAddress == "" {
+		if debug.IsEnabled() {
+			fmt.Fprintf(cli.Err(), "Warning: Empty registry endpoint from daemon. Using system default: %s\n", registry.IndexServer)
+		}
+		return registry.IndexServer
+	}
+	return info.IndexServerAddress
 }
 
 // EncodeAuthToBase64 serializes the auth configuration as JSON base64 payload
@@ -51,11 +62,15 @@ func RegistryAuthenticationPrivilegedFunc(cli Cli, index *registrytypes.IndexInf
 		fmt.Fprintf(cli.Out(), "\nPlease login prior to %s:\n", cmdName)
 		indexServer := registry.GetAuthConfigKey(index)
 		isDefaultRegistry := indexServer == ElectAuthServer(context.Background(), cli)
-		authConfig, err := ConfigureAuth(cli, "", "", indexServer, isDefaultRegistry)
+		authConfig, err := GetDefaultAuthConfig(cli, true, indexServer, isDefaultRegistry)
+		if err != nil {
+			fmt.Fprintf(cli.Err(), "Unable to retrieve stored credentials for %s, error: %s.\n", indexServer, err)
+		}
+		err = ConfigureAuth(cli, "", "", authConfig, isDefaultRegistry)
 		if err != nil {
 			return "", err
 		}
-		return EncodeAuthToBase64(authConfig)
+		return EncodeAuthToBase64(*authConfig)
 	}
 }
 
@@ -68,24 +83,34 @@ func ResolveAuthConfig(ctx context.Context, cli Cli, index *registrytypes.IndexI
 		configKey = ElectAuthServer(ctx, cli)
 	}
 
-	a, _ := cli.CredentialsStore(configKey).Get(configKey)
-	return a
+	a, _ := cli.ConfigFile().GetAuthConfig(configKey)
+	return types.AuthConfig(a)
 }
 
-// ConfigureAuth returns an AuthConfig from the specified user, password and server.
-func ConfigureAuth(cli Cli, flUser, flPassword, serverAddress string, isDefaultRegistry bool) (types.AuthConfig, error) {
-	// On Windows, force the use of the regular OS stdin stream. Fixes #14336/#14210
-	if runtime.GOOS == "windows" {
-		cli.SetIn(NewInStream(os.Stdin))
-	}
-
+// GetDefaultAuthConfig gets the default auth config given a serverAddress
+// If credentials for given serverAddress exists in the credential store, the configuration will be populated with values in it
+func GetDefaultAuthConfig(cli Cli, checkCredStore bool, serverAddress string, isDefaultRegistry bool) (*types.AuthConfig, error) {
 	if !isDefaultRegistry {
 		serverAddress = registry.ConvertToHostname(serverAddress)
 	}
+	var authconfig configtypes.AuthConfig
+	var err error
+	if checkCredStore {
+		authconfig, err = cli.ConfigFile().GetAuthConfig(serverAddress)
+	} else {
+		authconfig = configtypes.AuthConfig{}
+	}
+	authconfig.ServerAddress = serverAddress
+	authconfig.IdentityToken = ""
+	res := types.AuthConfig(authconfig)
+	return &res, err
+}
 
-	authconfig, err := cli.CredentialsStore(serverAddress).Get(serverAddress)
-	if err != nil {
-		return authconfig, err
+// ConfigureAuth handles prompting of user's username and password if needed
+func ConfigureAuth(cli Cli, flUser, flPassword string, authconfig *types.AuthConfig, isDefaultRegistry bool) error {
+	// On Windows, force the use of the regular OS stdin stream. Fixes #14336/#14210
+	if runtime.GOOS == "windows" {
+		cli.SetIn(streams.NewIn(os.Stdin))
 	}
 
 	// Some links documenting this:
@@ -96,7 +121,7 @@ func ConfigureAuth(cli Cli, flUser, flPassword, serverAddress string, isDefaultR
 	// will hit this if you attempt docker login from mintty where stdin
 	// is a pipe, not a character based console.
 	if flPassword == "" && !cli.In().IsTerminal() {
-		return authconfig, errors.Errorf("Error: Cannot perform an interactive login from a non TTY device")
+		return errors.Errorf("Error: Cannot perform an interactive login from a non TTY device")
 	}
 
 	authconfig.Username = strings.TrimSpace(authconfig.Username)
@@ -114,12 +139,12 @@ func ConfigureAuth(cli Cli, flUser, flPassword, serverAddress string, isDefaultR
 		}
 	}
 	if flUser == "" {
-		return authconfig, errors.Errorf("Error: Non-null Username Required")
+		return errors.Errorf("Error: Non-null Username Required")
 	}
 	if flPassword == "" {
 		oldState, err := term.SaveState(cli.In().FD())
 		if err != nil {
-			return authconfig, err
+			return err
 		}
 		fmt.Fprintf(cli.Out(), "Password: ")
 		term.DisableEcho(cli.In().FD(), oldState)
@@ -129,16 +154,14 @@ func ConfigureAuth(cli Cli, flUser, flPassword, serverAddress string, isDefaultR
 
 		term.RestoreTerminal(cli.In().FD(), oldState)
 		if flPassword == "" {
-			return authconfig, errors.Errorf("Error: Password Required")
+			return errors.Errorf("Error: Password Required")
 		}
 	}
 
 	authconfig.Username = flUser
 	authconfig.Password = flPassword
-	authconfig.ServerAddress = serverAddress
-	authconfig.IdentityToken = ""
 
-	return authconfig, nil
+	return nil
 }
 
 func readInput(in io.Reader, out io.Writer) string {

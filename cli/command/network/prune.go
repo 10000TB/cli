@@ -1,13 +1,13 @@
 package network
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/opts"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type pruneOptions struct {
@@ -33,7 +33,7 @@ func NewPruneCommand(dockerCli command.Cli) *cobra.Command {
 			}
 			return nil
 		},
-		Tags: map[string]string{"version": "1.25"},
+		Annotations: map[string]string{"version": "1.25"},
 	}
 
 	flags := cmd.Flags()
@@ -50,12 +50,12 @@ func runPrune(dockerCli command.Cli, options pruneOptions) (output string, err e
 	pruneFilters := command.PruneFilters(dockerCli, options.filter.Value())
 
 	if !options.force && !command.PromptForConfirmation(dockerCli.In(), dockerCli.Out(), warning) {
-		return
+		return "", nil
 	}
 
 	report, err := dockerCli.Client().NetworksPrune(context.Background(), pruneFilters)
 	if err != nil {
-		return
+		return "", err
 	}
 
 	if len(report.NetworksDeleted) > 0 {
@@ -65,12 +65,12 @@ func runPrune(dockerCli command.Cli, options pruneOptions) (output string, err e
 		}
 	}
 
-	return
+	return output, nil
 }
 
 // RunPrune calls the Network Prune API
 // This returns the amount of space reclaimed and a detailed output string
-func RunPrune(dockerCli command.Cli, filter opts.FilterOpt) (uint64, string, error) {
+func RunPrune(dockerCli command.Cli, all bool, filter opts.FilterOpt) (uint64, string, error) {
 	output, err := runPrune(dockerCli, pruneOptions{force: true, filter: filter})
 	return 0, output, err
 }

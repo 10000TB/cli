@@ -1,75 +1,44 @@
 package stack
 
 import (
-	"fmt"
-
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
-	"github.com/docker/cli/cli/command/formatter"
-	"github.com/docker/cli/cli/command/idresolver"
-	"github.com/docker/cli/cli/command/task"
-	"github.com/docker/cli/opts"
-	"github.com/docker/docker/api/types"
+	"github.com/docker/cli/cli/command/stack/kubernetes"
+	"github.com/docker/cli/cli/command/stack/options"
+	"github.com/docker/cli/cli/command/stack/swarm"
+	cliopts "github.com/docker/cli/opts"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
+	"github.com/spf13/pflag"
 )
 
-type psOptions struct {
-	filter    opts.FilterOpt
-	noTrunc   bool
-	namespace string
-	noResolve bool
-	quiet     bool
-	format    string
-}
-
-func newPsCommand(dockerCli command.Cli) *cobra.Command {
-	options := psOptions{filter: opts.NewFilterOpt()}
+func newPsCommand(dockerCli command.Cli, common *commonOptions) *cobra.Command {
+	opts := options.PS{Filter: cliopts.NewFilterOpt()}
 
 	cmd := &cobra.Command{
 		Use:   "ps [OPTIONS] STACK",
 		Short: "List the tasks in the stack",
 		Args:  cli.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			options.namespace = args[0]
-			return runPS(dockerCli, options)
+			opts.Namespace = args[0]
+			if err := validateStackName(opts.Namespace); err != nil {
+				return err
+			}
+			return RunPs(dockerCli, cmd.Flags(), common.Orchestrator(), opts)
 		},
 	}
 	flags := cmd.Flags()
-	flags.BoolVar(&options.noTrunc, "no-trunc", false, "Do not truncate output")
-	flags.BoolVar(&options.noResolve, "no-resolve", false, "Do not map IDs to Names")
-	flags.VarP(&options.filter, "filter", "f", "Filter output based on conditions provided")
-	flags.BoolVarP(&options.quiet, "quiet", "q", false, "Only display task IDs")
-	flags.StringVar(&options.format, "format", "", "Pretty-print tasks using a Go template")
-
+	flags.BoolVar(&opts.NoTrunc, "no-trunc", false, "Do not truncate output")
+	flags.BoolVar(&opts.NoResolve, "no-resolve", false, "Do not map IDs to Names")
+	flags.VarP(&opts.Filter, "filter", "f", "Filter output based on conditions provided")
+	flags.BoolVarP(&opts.Quiet, "quiet", "q", false, "Only display task IDs")
+	flags.StringVar(&opts.Format, "format", "", "Pretty-print tasks using a Go template")
+	kubernetes.AddNamespaceFlag(flags)
 	return cmd
 }
 
-func runPS(dockerCli command.Cli, options psOptions) error {
-	namespace := options.namespace
-	client := dockerCli.Client()
-	ctx := context.Background()
-
-	filter := getStackFilterFromOpt(options.namespace, options.filter)
-
-	tasks, err := client.TaskList(ctx, types.TaskListOptions{Filters: filter})
-	if err != nil {
-		return err
-	}
-
-	if len(tasks) == 0 {
-		fmt.Fprintf(dockerCli.Out(), "Nothing found in stack: %s\n", namespace)
-		return nil
-	}
-
-	format := options.format
-	if len(format) == 0 {
-		if len(dockerCli.ConfigFile().TasksFormat) > 0 && !options.quiet {
-			format = dockerCli.ConfigFile().TasksFormat
-		} else {
-			format = formatter.TableFormatKey
-		}
-	}
-
-	return task.Print(ctx, dockerCli, tasks, idresolver.New(client, options.noResolve), !options.noTrunc, options.quiet, format)
+// RunPs performs a stack ps against the specified orchestrator
+func RunPs(dockerCli command.Cli, flags *pflag.FlagSet, commonOrchestrator command.Orchestrator, opts options.PS) error {
+	return runOrchestratedCommand(dockerCli, flags, commonOrchestrator,
+		func() error { return swarm.RunPS(dockerCli, opts) },
+		func(kli *kubernetes.KubeCli) error { return kubernetes.RunPS(kli, opts) })
 }

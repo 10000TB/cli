@@ -1,13 +1,16 @@
 package secret
 
 import (
+	"context"
+	"sort"
+
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/command/formatter"
 	"github.com/docker/cli/opts"
 	"github.com/docker/docker/api/types"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
+	"vbom.ml/util/sortorder"
 )
 
 type listOptions struct {
@@ -53,9 +56,14 @@ func runSecretList(dockerCli command.Cli, options listOptions) error {
 			format = formatter.TableFormatKey
 		}
 	}
+
+	sort.Slice(secrets, func(i, j int) bool {
+		return sortorder.NaturalLess(secrets[i].Spec.Name, secrets[j].Spec.Name)
+	})
+
 	secretCtx := formatter.Context{
 		Output: dockerCli.Out(),
-		Format: formatter.NewSecretFormat(format, options.quiet),
+		Format: NewFormat(format, options.quiet),
 	}
-	return formatter.SecretWrite(secretCtx, secrets)
+	return FormatWrite(secretCtx, secrets)
 }

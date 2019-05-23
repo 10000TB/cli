@@ -1,7 +1,7 @@
 package checkpoint
 
 import (
-	"golang.org/x/net/context"
+	"context"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
@@ -48,7 +48,7 @@ func runList(dockerCli command.Cli, container string, opts listOptions) error {
 
 	cpCtx := formatter.Context{
 		Output: dockerCli.Out(),
-		Format: formatter.NewCheckpointFormat(formatter.TableFormatKey),
+		Format: NewFormat(formatter.TableFormatKey),
 	}
-	return formatter.CheckpointWrite(cpCtx, checkpoints)
+	return FormatWrite(cpCtx, checkpoints)
 }

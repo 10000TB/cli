@@ -1,13 +1,13 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/docker/api/types"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type rmOptions struct {
@@ -16,7 +16,7 @@ type rmOptions struct {
 	plugins []string
 }
 
-func newRemoveCommand(dockerCli *command.DockerCli) *cobra.Command {
+func newRemoveCommand(dockerCli command.Cli) *cobra.Command {
 	var opts rmOptions
 
 	cmd := &cobra.Command{
@@ -35,12 +35,11 @@ func newRemoveCommand(dockerCli *command.DockerCli) *cobra.Command {
 	return cmd
 }
 
-func runRemove(dockerCli *command.DockerCli, opts *rmOptions) error {
+func runRemove(dockerCli command.Cli, opts *rmOptions) error {
 	ctx := context.Background()
 
 	var errs cli.Errors
 	for _, name := range opts.plugins {
-		// TODO: pass names to api instead of making multiple api calls
 		if err := dockerCli.Client().PluginRemove(ctx, name, types.PluginRemoveOptions{Force: opts.force}); err != nil {
 			errs = append(errs, err)
 			continue

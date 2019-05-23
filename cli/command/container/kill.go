@@ -1,6 +1,7 @@
 package container
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,7 +9,6 @@ import (
 	"github.com/docker/cli/cli/command"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type killOptions struct {
@@ -18,7 +18,7 @@ type killOptions struct {
 }
 
 // NewKillCommand creates a new cobra.Command for `docker kill`
-func NewKillCommand(dockerCli *command.DockerCli) *cobra.Command {
+func NewKillCommand(dockerCli command.Cli) *cobra.Command {
 	var opts killOptions
 
 	cmd := &cobra.Command{
@@ -36,7 +36,7 @@ func NewKillCommand(dockerCli *command.DockerCli) *cobra.Command {
 	return cmd
 }
 
-func runKill(dockerCli *command.DockerCli, opts *killOptions) error {
+func runKill(dockerCli command.Cli, opts *killOptions) error {
 	var errs []string
 	ctx := context.Background()
 	errChan := parallelOperation(ctx, opts.containers, func(ctx context.Context, container string) error {

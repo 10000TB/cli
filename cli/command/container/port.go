@@ -1,6 +1,7 @@
 package container
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -9,7 +10,6 @@ import (
 	"github.com/docker/go-connections/nat"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type portOptions struct {
@@ -19,7 +19,7 @@ type portOptions struct {
 }
 
 // NewPortCommand creates a new cobra.Command for `docker port`
-func NewPortCommand(dockerCli *command.DockerCli) *cobra.Command {
+func NewPortCommand(dockerCli command.Cli) *cobra.Command {
 	var opts portOptions
 
 	cmd := &cobra.Command{
@@ -37,7 +37,7 @@ func NewPortCommand(dockerCli *command.DockerCli) *cobra.Command {
 	return cmd
 }
 
-func runPort(dockerCli *command.DockerCli, opts *portOptions) error {
+func runPort(dockerCli command.Cli, opts *portOptions) error {
 	ctx := context.Background()
 
 	c, err := dockerCli.Client().ContainerInspect(ctx, opts.container)

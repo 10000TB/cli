@@ -12,9 +12,9 @@ import (
 	"testing"
 
 	"github.com/docker/docker/pkg/archive"
-	"github.com/docker/docker/pkg/testutil"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/docker/docker/pkg/fileutils"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
 )
 
 const dockerfileContents = "FROM busybox"
@@ -38,7 +38,7 @@ func testValidateContextDirectory(t *testing.T, prepare func(t *testing.T) (stri
 	defer cleanup()
 
 	err := ValidateContextDirectory(contextDir, excludes)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 }
 
 func TestGetContextFromLocalDirNoDockerfile(t *testing.T) {
@@ -46,7 +46,7 @@ func TestGetContextFromLocalDirNoDockerfile(t *testing.T) {
 	defer cleanup()
 
 	_, _, err := GetContextFromLocalDir(contextDir, "")
-	testutil.ErrorContains(t, err, "Dockerfile")
+	assert.ErrorContains(t, err, "Dockerfile")
 }
 
 func TestGetContextFromLocalDirNotExistingDir(t *testing.T) {
@@ -56,7 +56,7 @@ func TestGetContextFromLocalDirNotExistingDir(t *testing.T) {
 	fakePath := filepath.Join(contextDir, "fake")
 
 	_, _, err := GetContextFromLocalDir(fakePath, "")
-	testutil.ErrorContains(t, err, "fake")
+	assert.ErrorContains(t, err, "fake")
 }
 
 func TestGetContextFromLocalDirNotExistingDockerfile(t *testing.T) {
@@ -66,7 +66,7 @@ func TestGetContextFromLocalDirNotExistingDockerfile(t *testing.T) {
 	fakePath := filepath.Join(contextDir, "fake")
 
 	_, _, err := GetContextFromLocalDir(contextDir, fakePath)
-	testutil.ErrorContains(t, err, "fake")
+	assert.ErrorContains(t, err, "fake")
 }
 
 func TestGetContextFromLocalDirWithNoDirectory(t *testing.T) {
@@ -79,10 +79,10 @@ func TestGetContextFromLocalDirWithNoDirectory(t *testing.T) {
 	defer chdirCleanup()
 
 	absContextDir, relDockerfile, err := GetContextFromLocalDir(contextDir, "")
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
-	assert.Equal(t, contextDir, absContextDir)
-	assert.Equal(t, DefaultDockerfileName, relDockerfile)
+	assert.Check(t, is.Equal(contextDir, absContextDir))
+	assert.Check(t, is.Equal(DefaultDockerfileName, relDockerfile))
 }
 
 func TestGetContextFromLocalDirWithDockerfile(t *testing.T) {
@@ -92,10 +92,10 @@ func TestGetContextFromLocalDirWithDockerfile(t *testing.T) {
 	createTestTempFile(t, contextDir, DefaultDockerfileName, dockerfileContents, 0777)
 
 	absContextDir, relDockerfile, err := GetContextFromLocalDir(contextDir, "")
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
-	assert.Equal(t, contextDir, absContextDir)
-	assert.Equal(t, DefaultDockerfileName, relDockerfile)
+	assert.Check(t, is.Equal(contextDir, absContextDir))
+	assert.Check(t, is.Equal(DefaultDockerfileName, relDockerfile))
 }
 
 func TestGetContextFromLocalDirLocalFile(t *testing.T) {
@@ -130,10 +130,10 @@ func TestGetContextFromLocalDirWithCustomDockerfile(t *testing.T) {
 	createTestTempFile(t, contextDir, DefaultDockerfileName, dockerfileContents, 0777)
 
 	absContextDir, relDockerfile, err := GetContextFromLocalDir(contextDir, DefaultDockerfileName)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
-	assert.Equal(t, contextDir, absContextDir)
-	assert.Equal(t, DefaultDockerfileName, relDockerfile)
+	assert.Check(t, is.Equal(contextDir, absContextDir))
+	assert.Check(t, is.Equal(DefaultDockerfileName, relDockerfile))
 }
 
 func TestGetContextFromReaderString(t *testing.T) {
@@ -161,7 +161,7 @@ func TestGetContextFromReaderString(t *testing.T) {
 		t.Fatalf("Tar stream too long: %s", err)
 	}
 
-	require.NoError(t, tarArchive.Close())
+	assert.NilError(t, tarArchive.Close())
 
 	if dockerfileContents != contents {
 		t.Fatalf("Uncompressed tar archive does not equal: %s, got: %s", dockerfileContents, contents)
@@ -179,15 +179,15 @@ func TestGetContextFromReaderTar(t *testing.T) {
 	createTestTempFile(t, contextDir, DefaultDockerfileName, dockerfileContents, 0777)
 
 	tarStream, err := archive.Tar(contextDir, archive.Uncompressed)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	tarArchive, relDockerfile, err := GetContextFromReader(tarStream, DefaultDockerfileName)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	tarReader := tar.NewReader(tarArchive)
 
 	header, err := tarReader.Next()
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	if header.Name != DefaultDockerfileName {
 		t.Fatalf("Dockerfile name should be: %s, got: %s", DefaultDockerfileName, header.Name)
@@ -203,7 +203,7 @@ func TestGetContextFromReaderTar(t *testing.T) {
 		t.Fatalf("Tar stream too long: %s", err)
 	}
 
-	require.NoError(t, tarArchive.Close())
+	assert.NilError(t, tarArchive.Close())
 
 	if dockerfileContents != contents {
 		t.Fatalf("Uncompressed tar archive does not equal: %s, got: %s", dockerfileContents, contents)
@@ -243,8 +243,8 @@ func TestValidateContextDirectoryWithOneFileExcludes(t *testing.T) {
 // When an error occurs, it terminates the test.
 func createTestTempDir(t *testing.T, dir, prefix string) (string, func()) {
 	path, err := ioutil.TempDir(dir, prefix)
-	require.NoError(t, err)
-	return path, func() { require.NoError(t, os.RemoveAll(path)) }
+	assert.NilError(t, err)
+	return path, func() { assert.NilError(t, os.RemoveAll(path)) }
 }
 
 // createTestTempFile creates a temporary file within dir with specific contents and permissions.
@@ -252,7 +252,7 @@ func createTestTempDir(t *testing.T, dir, prefix string) (string, func()) {
 func createTestTempFile(t *testing.T, dir, filename, contents string, perm os.FileMode) string {
 	filePath := filepath.Join(dir, filename)
 	err := ioutil.WriteFile(filePath, []byte(contents), perm)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 	return filePath
 }
 
@@ -262,7 +262,155 @@ func createTestTempFile(t *testing.T, dir, filename, contents string, perm os.Fi
 // When an error occurs, it terminates the test.
 func chdir(t *testing.T, dir string) func() {
 	workingDirectory, err := os.Getwd()
-	require.NoError(t, err)
-	require.NoError(t, os.Chdir(dir))
-	return func() { require.NoError(t, os.Chdir(workingDirectory)) }
+	assert.NilError(t, err)
+	assert.NilError(t, os.Chdir(dir))
+	return func() { assert.NilError(t, os.Chdir(workingDirectory)) }
+}
+
+func TestIsArchive(t *testing.T) {
+	var testcases = []struct {
+		doc      string
+		header   []byte
+		expected bool
+	}{
+		{
+			doc:      "nil is not a valid header",
+			header:   nil,
+			expected: false,
+		},
+		{
+			doc:      "invalid header bytes",
+			header:   []byte{0x00, 0x01, 0x02},
+			expected: false,
+		},
+		{
+			doc:      "header for bzip2 archive",
+			header:   []byte{0x42, 0x5A, 0x68},
+			expected: true,
+		},
+		{
+			doc:      "header for 7zip archive is not supported",
+			header:   []byte{0x50, 0x4b, 0x03, 0x04},
+			expected: false,
+		},
+	}
+	for _, testcase := range testcases {
+		assert.Check(t, is.Equal(testcase.expected, IsArchive(testcase.header)), testcase.doc)
+	}
+}
+
+func TestDetectArchiveReader(t *testing.T) {
+	var testcases = []struct {
+		file     string
+		desc     string
+		expected bool
+	}{
+		{
+			file:     "../testdata/tar.test",
+			desc:     "tar file without pax headers",
+			expected: true,
+		},
+		{
+			file:     "../testdata/gittar.test",
+			desc:     "tar file with pax headers",
+			expected: true,
+		},
+		{
+			file:     "../testdata/Dockerfile.test",
+			desc:     "not a tar file",
+			expected: false,
+		},
+	}
+	for _, testcase := range testcases {
+		content, err := os.Open(testcase.file)
+		assert.NilError(t, err)
+		defer content.Close()
+
+		_, isArchive, err := DetectArchiveReader(content)
+		assert.NilError(t, err)
+		assert.Check(t, is.Equal(testcase.expected, isArchive), testcase.file)
+	}
+}
+
+func mustPatternMatcher(t *testing.T, patterns []string) *fileutils.PatternMatcher {
+	t.Helper()
+	pm, err := fileutils.NewPatternMatcher(patterns)
+	if err != nil {
+		t.Fatal("failed to construct pattern matcher: ", err)
+	}
+	return pm
+}
+
+func TestWildcardMatches(t *testing.T) {
+	match, _ := filepathMatches(mustPatternMatcher(t, []string{"*"}), "fileutils.go")
+	if !match {
+		t.Errorf("failed to get a wildcard match, got %v", match)
+	}
+}
+
+// A simple pattern match should return true.
+func TestPatternMatches(t *testing.T) {
+	match, _ := filepathMatches(mustPatternMatcher(t, []string{"*.go"}), "fileutils.go")
+	if !match {
+		t.Errorf("failed to get a match, got %v", match)
+	}
+}
+
+// An exclusion followed by an inclusion should return true.
+func TestExclusionPatternMatchesPatternBefore(t *testing.T) {
+	match, _ := filepathMatches(mustPatternMatcher(t, []string{"!fileutils.go", "*.go"}), "fileutils.go")
+	if !match {
+		t.Errorf("failed to get true match on exclusion pattern, got %v", match)
+	}
+}
+
+// A folder pattern followed by an exception should return false.
+func TestPatternMatchesFolderExclusions(t *testing.T) {
+	match, _ := filepathMatches(mustPatternMatcher(t, []string{"docs", "!docs/README.md"}), "docs/README.md")
+	if match {
+		t.Errorf("failed to get a false match on exclusion pattern, got %v", match)
+	}
+}
+
+// A folder pattern followed by an exception should return false.
+func TestPatternMatchesFolderWithSlashExclusions(t *testing.T) {
+	match, _ := filepathMatches(mustPatternMatcher(t, []string{"docs/", "!docs/README.md"}), "docs/README.md")
+	if match {
+		t.Errorf("failed to get a false match on exclusion pattern, got %v", match)
+	}
+}
+
+// A folder pattern followed by an exception should return false.
+func TestPatternMatchesFolderWildcardExclusions(t *testing.T) {
+	match, _ := filepathMatches(mustPatternMatcher(t, []string{"docs/*", "!docs/README.md"}), "docs/README.md")
+	if match {
+		t.Errorf("failed to get a false match on exclusion pattern, got %v", match)
+	}
+}
+
+// A pattern followed by an exclusion should return false.
+func TestExclusionPatternMatchesPatternAfter(t *testing.T) {
+	match, _ := filepathMatches(mustPatternMatcher(t, []string{"*.go", "!fileutils.go"}), "fileutils.go")
+	if match {
+		t.Errorf("failed to get false match on exclusion pattern, got %v", match)
+	}
+}
+
+// A filename evaluating to . should return false.
+func TestExclusionPatternMatchesWholeDirectory(t *testing.T) {
+	match, _ := filepathMatches(mustPatternMatcher(t, []string{"*.go"}), ".")
+	if match {
+		t.Errorf("failed to get false match on ., got %v", match)
+	}
+}
+
+// Matches with no patterns
+func TestMatchesWithNoPatterns(t *testing.T) {
+	matches, err := filepathMatches(mustPatternMatcher(t, []string{}), "/any/path/there")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if matches {
+		t.Fatalf("Should not have match anything")
+	}
 }

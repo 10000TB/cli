@@ -1,27 +1,17 @@
 package stack
 
 import (
-	"bytes"
+	"io/ioutil"
 	"testing"
 
-	"github.com/docker/cli/cli/compose/convert"
-	"github.com/docker/cli/cli/internal/test"
-	"github.com/stretchr/testify/assert"
-	"golang.org/x/net/context"
+	"github.com/docker/cli/internal/test"
+	"gotest.tools/assert"
 )
 
-func TestPruneServices(t *testing.T) {
-	ctx := context.Background()
-	namespace := convert.NewNamespace("foo")
-	services := map[string]struct{}{
-		"new":  {},
-		"keep": {},
-	}
-	client := &fakeClient{services: []string{objectName("foo", "keep"), objectName("foo", "remove")}}
-	dockerCli := test.NewFakeCli(client, &bytes.Buffer{})
-	dockerCli.SetErr(&bytes.Buffer{})
+func TestDeployWithEmptyName(t *testing.T) {
+	cmd := newDeployCommand(test.NewFakeCli(&fakeClient{}), nil)
+	cmd.SetArgs([]string{"'   '"})
+	cmd.SetOutput(ioutil.Discard)
 
-	pruneServices(ctx, dockerCli, namespace, services)
-
-	assert.Equal(t, buildObjectIDs([]string{objectName("foo", "remove")}), client.removedServices)
+	assert.ErrorContains(t, cmd.Execute(), `invalid stack name: "'   '"`)
 }

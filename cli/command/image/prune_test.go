@@ -1,18 +1,17 @@
 package image
 
 import (
-	"bytes"
 	"fmt"
 	"io/ioutil"
 	"testing"
 
-	"github.com/docker/cli/cli/internal/test"
+	"github.com/docker/cli/internal/test"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/pkg/testutil"
-	"github.com/docker/docker/pkg/testutil/golden"
 	"github.com/pkg/errors"
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
+	"gotest.tools/golden"
 )
 
 func TestNewPruneCommandErrors(t *testing.T) {
@@ -25,7 +24,7 @@ func TestNewPruneCommandErrors(t *testing.T) {
 		{
 			name:          "wrong-args",
 			args:          []string{"something"},
-			expectedError: "accepts no argument(s).",
+			expectedError: "accepts no arguments.",
 		},
 		{
 			name:          "prune-error",
@@ -37,13 +36,12 @@ func TestNewPruneCommandErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
 		cmd := NewPruneCommand(test.NewFakeCli(&fakeClient{
 			imagesPruneFunc: tc.imagesPruneFunc,
-		}, buf))
+		}))
 		cmd.SetOutput(ioutil.Discard)
 		cmd.SetArgs(tc.args)
-		testutil.ErrorContains(t, cmd.Execute(), tc.expectedError)
+		assert.ErrorContains(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
@@ -57,7 +55,7 @@ func TestNewPruneCommandSuccess(t *testing.T) {
 			name: "all",
 			args: []string{"--all"},
 			imagesPruneFunc: func(pruneFilter filters.Args) (types.ImagesPruneReport, error) {
-				assert.Equal(t, "false", pruneFilter.Get("dangling")[0])
+				assert.Check(t, is.Equal("false", pruneFilter.Get("dangling")[0]))
 				return types.ImagesPruneReport{}, nil
 			},
 		},
@@ -65,7 +63,7 @@ func TestNewPruneCommandSuccess(t *testing.T) {
 			name: "force-deleted",
 			args: []string{"--force"},
 			imagesPruneFunc: func(pruneFilter filters.Args) (types.ImagesPruneReport, error) {
-				assert.Equal(t, "true", pruneFilter.Get("dangling")[0])
+				assert.Check(t, is.Equal("true", pruneFilter.Get("dangling")[0]))
 				return types.ImagesPruneReport{
 					ImagesDeleted:  []types.ImageDeleteResponseItem{{Deleted: "image1"}},
 					SpaceReclaimed: 1,
@@ -73,10 +71,18 @@ func TestNewPruneCommandSuccess(t *testing.T) {
 			},
 		},
 		{
+			name: "label-filter",
+			args: []string{"--force", "--filter", "label=foobar"},
+			imagesPruneFunc: func(pruneFilter filters.Args) (types.ImagesPruneReport, error) {
+				assert.Check(t, is.Equal("foobar", pruneFilter.Get("label")[0]))
+				return types.ImagesPruneReport{}, nil
+			},
+		},
+		{
 			name: "force-untagged",
 			args: []string{"--force"},
 			imagesPruneFunc: func(pruneFilter filters.Args) (types.ImagesPruneReport, error) {
-				assert.Equal(t, "true", pruneFilter.Get("dangling")[0])
+				assert.Check(t, is.Equal("true", pruneFilter.Get("dangling")[0]))
 				return types.ImagesPruneReport{
 					ImagesDeleted:  []types.ImageDeleteResponseItem{{Untagged: "image1"}},
 					SpaceReclaimed: 2,
@@ -85,16 +91,12 @@ func TestNewPruneCommandSuccess(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		cmd := NewPruneCommand(test.NewFakeCli(&fakeClient{
-			imagesPruneFunc: tc.imagesPruneFunc,
-		}, buf))
+		cli := test.NewFakeCli(&fakeClient{imagesPruneFunc: tc.imagesPruneFunc})
+		cmd := NewPruneCommand(cli)
 		cmd.SetOutput(ioutil.Discard)
 		cmd.SetArgs(tc.args)
 		err := cmd.Execute()
-		assert.NoError(t, err)
-		actual := buf.String()
-		expected := string(golden.Get(t, []byte(actual), fmt.Sprintf("prune-command-success.%s.golden", tc.name))[:])
-		testutil.EqualNormalizedString(t, testutil.RemoveSpace, actual, expected)
+		assert.NilError(t, err)
+		golden.Assert(t, cli.OutBuffer().String(), fmt.Sprintf("prune-command-success.%s.golden", tc.name))
 	}
 }

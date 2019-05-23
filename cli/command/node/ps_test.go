@@ -1,21 +1,20 @@
 package node
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"io/ioutil"
 	"testing"
 	"time"
 
-	"github.com/docker/cli/cli/internal/test"
+	"github.com/docker/cli/internal/test"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/pkg/errors"
 	// Import builders to get the builder function as package function
-	. "github.com/docker/cli/cli/internal/test/builders"
-	"github.com/docker/docker/pkg/testutil"
-	"github.com/docker/docker/pkg/testutil/golden"
-	"github.com/stretchr/testify/assert"
+	. "github.com/docker/cli/internal/test/builders"
+	"gotest.tools/assert"
+	"gotest.tools/golden"
 )
 
 func TestNodePsErrors(t *testing.T) {
@@ -50,32 +49,32 @@ func TestNodePsErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		cmd := newPsCommand(
-			test.NewFakeCli(&fakeClient{
-				infoFunc:        tc.infoFunc,
-				nodeInspectFunc: tc.nodeInspectFunc,
-				taskInspectFunc: tc.taskInspectFunc,
-				taskListFunc:    tc.taskListFunc,
-			}, buf))
+		cli := test.NewFakeCli(&fakeClient{
+			infoFunc:        tc.infoFunc,
+			nodeInspectFunc: tc.nodeInspectFunc,
+			taskInspectFunc: tc.taskInspectFunc,
+			taskListFunc:    tc.taskListFunc,
+		})
+		cmd := newPsCommand(cli)
 		cmd.SetArgs(tc.args)
 		for key, value := range tc.flags {
 			cmd.Flags().Set(key, value)
 		}
 		cmd.SetOutput(ioutil.Discard)
-		assert.EqualError(t, cmd.Execute(), tc.expectedError)
+		assert.Error(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
 func TestNodePs(t *testing.T) {
 	testCases := []struct {
-		name            string
-		args            []string
-		flags           map[string]string
-		infoFunc        func() (types.Info, error)
-		nodeInspectFunc func() (swarm.Node, []byte, error)
-		taskListFunc    func(options types.TaskListOptions) ([]swarm.Task, error)
-		taskInspectFunc func(taskID string) (swarm.Task, []byte, error)
+		name               string
+		args               []string
+		flags              map[string]string
+		infoFunc           func() (types.Info, error)
+		nodeInspectFunc    func() (swarm.Node, []byte, error)
+		taskListFunc       func(options types.TaskListOptions) ([]swarm.Task, error)
+		taskInspectFunc    func(taskID string) (swarm.Task, []byte, error)
+		serviceInspectFunc func(ctx context.Context, serviceID string, opts types.ServiceInspectOptions) (swarm.Service, []byte, error)
 	}{
 		{
 			name: "simple",
@@ -94,6 +93,16 @@ func TestNodePs(t *testing.T) {
 					}))),
 				}, nil
 			},
+			serviceInspectFunc: func(ctx context.Context, serviceID string, opts types.ServiceInspectOptions) (swarm.Service, []byte, error) {
+				return swarm.Service{
+					ID: serviceID,
+					Spec: swarm.ServiceSpec{
+						Annotations: swarm.Annotations{
+							Name: serviceID,
+						},
+					},
+				}, []byte{}, nil
+			},
 		},
 		{
 			name: "with-errors",
@@ -103,32 +112,40 @@ func TestNodePs(t *testing.T) {
 			},
 			taskListFunc: func(options types.TaskListOptions) ([]swarm.Task, error) {
 				return []swarm.Task{
-					*Task(TaskID("taskID1"), ServiceID("failure"),
+					*Task(TaskID("taskID1"), TaskServiceID("failure"),
 						WithStatus(Timestamp(time.Now().Add(-2*time.Hour)), StatusErr("a task error"))),
-					*Task(TaskID("taskID2"), ServiceID("failure"),
+					*Task(TaskID("taskID2"), TaskServiceID("failure"),
 						WithStatus(Timestamp(time.Now().Add(-3*time.Hour)), StatusErr("a task error"))),
-					*Task(TaskID("taskID3"), ServiceID("failure"),
+					*Task(TaskID("taskID3"), TaskServiceID("failure"),
 						WithStatus(Timestamp(time.Now().Add(-4*time.Hour)), StatusErr("a task error"))),
 				}, nil
+			},
+			serviceInspectFunc: func(ctx context.Context, serviceID string, opts types.ServiceInspectOptions) (swarm.Service, []byte, error) {
+				return swarm.Service{
+					ID: serviceID,
+					Spec: swarm.ServiceSpec{
+						Annotations: swarm.Annotations{
+							Name: serviceID,
+						},
+					},
+				}, []byte{}, nil
 			},
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		cmd := newPsCommand(
-			test.NewFakeCli(&fakeClient{
-				infoFunc:        tc.infoFunc,
-				nodeInspectFunc: tc.nodeInspectFunc,
-				taskInspectFunc: tc.taskInspectFunc,
-				taskListFunc:    tc.taskListFunc,
-			}, buf))
+		cli := test.NewFakeCli(&fakeClient{
+			infoFunc:           tc.infoFunc,
+			nodeInspectFunc:    tc.nodeInspectFunc,
+			taskInspectFunc:    tc.taskInspectFunc,
+			taskListFunc:       tc.taskListFunc,
+			serviceInspectFunc: tc.serviceInspectFunc,
+		})
+		cmd := newPsCommand(cli)
 		cmd.SetArgs(tc.args)
 		for key, value := range tc.flags {
 			cmd.Flags().Set(key, value)
 		}
-		assert.NoError(t, cmd.Execute())
-		actual := buf.String()
-		expected := golden.Get(t, []byte(actual), fmt.Sprintf("node-ps.%s.golden", tc.name))
-		testutil.EqualNormalizedString(t, testutil.RemoveSpace, actual, string(expected))
+		assert.NilError(t, cmd.Execute())
+		golden.Assert(t, cli.OutBuffer().String(), fmt.Sprintf("node-ps.%s.golden", tc.name))
 	}
 }

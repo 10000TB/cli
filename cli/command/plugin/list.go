@@ -1,12 +1,15 @@
 package plugin
 
 import (
+	"context"
+	"sort"
+
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/command/formatter"
 	"github.com/docker/cli/opts"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
+	"vbom.ml/util/sortorder"
 )
 
 type listOptions struct {
@@ -16,7 +19,7 @@ type listOptions struct {
 	filter  opts.FilterOpt
 }
 
-func newListCommand(dockerCli *command.DockerCli) *cobra.Command {
+func newListCommand(dockerCli command.Cli) *cobra.Command {
 	options := listOptions{filter: opts.NewFilterOpt()}
 
 	cmd := &cobra.Command{
@@ -39,11 +42,15 @@ func newListCommand(dockerCli *command.DockerCli) *cobra.Command {
 	return cmd
 }
 
-func runList(dockerCli *command.DockerCli, options listOptions) error {
+func runList(dockerCli command.Cli, options listOptions) error {
 	plugins, err := dockerCli.Client().PluginList(context.Background(), options.filter.Value())
 	if err != nil {
 		return err
 	}
+
+	sort.Slice(plugins, func(i, j int) bool {
+		return sortorder.NaturalLess(plugins[i].Name, plugins[j].Name)
+	})
 
 	format := options.format
 	if len(format) == 0 {
@@ -56,8 +63,8 @@ func runList(dockerCli *command.DockerCli, options listOptions) error {
 
 	pluginsCtx := formatter.Context{
 		Output: dockerCli.Out(),
-		Format: formatter.NewPluginFormat(format, options.quiet),
+		Format: NewFormat(format, options.quiet),
 		Trunc:  !options.noTrunc,
 	}
-	return formatter.PluginWrite(pluginsCtx, plugins)
+	return FormatWrite(pluginsCtx, plugins)
 }

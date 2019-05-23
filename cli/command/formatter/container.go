@@ -2,30 +2,26 @@ package formatter
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/docker/distribution/reference"
-	"github.com/docker/docker/api"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/pkg/stringid"
-	"github.com/docker/docker/pkg/stringutils"
-	units "github.com/docker/go-units"
+	"github.com/docker/go-units"
 )
 
 const (
 	defaultContainerTableFormat = "table {{.ID}}\t{{.Image}}\t{{.Command}}\t{{.RunningFor}}\t{{.Status}}\t{{.Ports}}\t{{.Names}}"
 
-	containerIDHeader = "CONTAINER ID"
-	namesHeader       = "NAMES"
-	commandHeader     = "COMMAND"
-	runningForHeader  = "CREATED"
-	statusHeader      = "STATUS"
-	portsHeader       = "PORTS"
-	mountsHeader      = "MOUNTS"
-	localVolumes      = "LOCAL VOLUMES"
-	networksHeader    = "NETWORKS"
+	namesHeader      = "NAMES"
+	commandHeader    = "COMMAND"
+	runningForHeader = "CREATED"
+	mountsHeader     = "MOUNTS"
+	localVolumes     = "LOCAL VOLUMES"
+	networksHeader   = "NETWORKS"
 )
 
 // NewContainerFormat returns a Format for rendering using a Context
@@ -33,7 +29,7 @@ func NewContainerFormat(source string, quiet bool, size bool) Format {
 	switch source {
 	case TableFormatKey:
 		if quiet {
-			return defaultQuietFormat
+			return DefaultQuietFormat
 		}
 		format := defaultContainerTableFormat
 		if size {
@@ -63,7 +59,7 @@ ports: {{- pad .Ports 1 0}}
 
 // ContainerWrite renders the context for a list of containers
 func ContainerWrite(ctx Context, containers []types.Container) error {
-	render := func(format func(subContext subContext) error) error {
+	render := func(format func(subContext SubContext) error) error {
 		for _, container := range containers {
 			err := format(&containerContext{trunc: ctx.Trunc, c: container})
 			if err != nil {
@@ -75,16 +71,6 @@ func ContainerWrite(ctx Context, containers []types.Container) error {
 	return ctx.Write(newContainerContext(), render)
 }
 
-type containerHeaderContext map[string]string
-
-func (c containerHeaderContext) Label(name string) string {
-	n := strings.Split(name, ".")
-	r := strings.NewReplacer("-", " ", "_", " ")
-	h := r.Replace(n[len(n)-1])
-
-	return h
-}
-
 type containerContext struct {
 	HeaderContext
 	trunc bool
@@ -93,17 +79,17 @@ type containerContext struct {
 
 func newContainerContext() *containerContext {
 	containerCtx := containerContext{}
-	containerCtx.header = containerHeaderContext{
-		"ID":           containerIDHeader,
+	containerCtx.Header = SubHeaderContext{
+		"ID":           ContainerIDHeader,
 		"Names":        namesHeader,
-		"Image":        imageHeader,
+		"Image":        ImageHeader,
 		"Command":      commandHeader,
-		"CreatedAt":    createdAtHeader,
+		"CreatedAt":    CreatedAtHeader,
 		"RunningFor":   runningForHeader,
-		"Ports":        portsHeader,
-		"Status":       statusHeader,
-		"Size":         sizeHeader,
-		"Labels":       labelsHeader,
+		"Ports":        PortsHeader,
+		"Status":       StatusHeader,
+		"Size":         SizeHeader,
+		"Labels":       LabelsHeader,
 		"Mounts":       mountsHeader,
 		"LocalVolumes": localVolumes,
 		"Networks":     networksHeader,
@@ -112,7 +98,7 @@ func newContainerContext() *containerContext {
 }
 
 func (c *containerContext) MarshalJSON() ([]byte, error) {
-	return marshalJSON(c)
+	return MarshalJSON(c)
 }
 
 func (c *containerContext) ID() string {
@@ -165,22 +151,22 @@ func (c *containerContext) Image() string {
 func (c *containerContext) Command() string {
 	command := c.c.Command
 	if c.trunc {
-		command = stringutils.Ellipsis(command, 20)
+		command = Ellipsis(command, 20)
 	}
 	return strconv.Quote(command)
 }
 
 func (c *containerContext) CreatedAt() string {
-	return time.Unix(int64(c.c.Created), 0).String()
+	return time.Unix(c.c.Created, 0).String()
 }
 
 func (c *containerContext) RunningFor() string {
-	createdAt := time.Unix(int64(c.c.Created), 0)
+	createdAt := time.Unix(c.c.Created, 0)
 	return units.HumanDuration(time.Now().UTC().Sub(createdAt)) + " ago"
 }
 
 func (c *containerContext) Ports() string {
-	return api.DisplayablePorts(c.c.Ports)
+	return DisplayablePorts(c.c.Ports)
 }
 
 func (c *containerContext) Status() string {
@@ -227,7 +213,7 @@ func (c *containerContext) Mounts() string {
 			name = m.Name
 		}
 		if c.trunc {
-			name = stringutils.Ellipsis(name, 15)
+			name = Ellipsis(name, 15)
 		}
 		mounts = append(mounts, name)
 	}
@@ -256,4 +242,88 @@ func (c *containerContext) Networks() string {
 	}
 
 	return strings.Join(networks, ",")
+}
+
+// DisplayablePorts returns formatted string representing open ports of container
+// e.g. "0.0.0.0:80->9090/tcp, 9988/tcp"
+// it's used by command 'docker ps'
+func DisplayablePorts(ports []types.Port) string {
+	type portGroup struct {
+		first uint16
+		last  uint16
+	}
+	groupMap := make(map[string]*portGroup)
+	var result []string
+	var hostMappings []string
+	var groupMapKeys []string
+	sort.Slice(ports, func(i, j int) bool {
+		return comparePorts(ports[i], ports[j])
+	})
+
+	for _, port := range ports {
+		current := port.PrivatePort
+		portKey := port.Type
+		if port.IP != "" {
+			if port.PublicPort != current {
+				hostMappings = append(hostMappings, fmt.Sprintf("%s:%d->%d/%s", port.IP, port.PublicPort, port.PrivatePort, port.Type))
+				continue
+			}
+			portKey = fmt.Sprintf("%s/%s", port.IP, port.Type)
+		}
+		group := groupMap[portKey]
+
+		if group == nil {
+			groupMap[portKey] = &portGroup{first: current, last: current}
+			// record order that groupMap keys are created
+			groupMapKeys = append(groupMapKeys, portKey)
+			continue
+		}
+		if current == (group.last + 1) {
+			group.last = current
+			continue
+		}
+
+		result = append(result, formGroup(portKey, group.first, group.last))
+		groupMap[portKey] = &portGroup{first: current, last: current}
+	}
+	for _, portKey := range groupMapKeys {
+		g := groupMap[portKey]
+		result = append(result, formGroup(portKey, g.first, g.last))
+	}
+	result = append(result, hostMappings...)
+	return strings.Join(result, ", ")
+}
+
+func formGroup(key string, start, last uint16) string {
+	parts := strings.Split(key, "/")
+	groupType := parts[0]
+	var ip string
+	if len(parts) > 1 {
+		ip = parts[0]
+		groupType = parts[1]
+	}
+	group := strconv.Itoa(int(start))
+	if start != last {
+		group = fmt.Sprintf("%s-%d", group, last)
+	}
+	if ip != "" {
+		group = fmt.Sprintf("%s:%s->%s", ip, group, group)
+	}
+	return fmt.Sprintf("%s/%s", group, groupType)
+}
+
+func comparePorts(i, j types.Port) bool {
+	if i.PrivatePort != j.PrivatePort {
+		return i.PrivatePort < j.PrivatePort
+	}
+
+	if i.IP != j.IP {
+		return i.IP < j.IP
+	}
+
+	if i.PublicPort != j.PublicPort {
+		return i.PublicPort < j.PublicPort
+	}
+
+	return i.Type < j.Type
 }

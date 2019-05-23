@@ -1,7 +1,11 @@
 package service
 
 import (
+	"context"
 	"fmt"
+	"sort"
+
+	"vbom.ml/util/sortorder"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
@@ -11,7 +15,6 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type listOptions struct {
@@ -20,7 +23,7 @@ type listOptions struct {
 	filter opts.FilterOpt
 }
 
-func newListCommand(dockerCli *command.DockerCli) *cobra.Command {
+func newListCommand(dockerCli command.Cli) *cobra.Command {
 	options := listOptions{filter: opts.NewFilterOpt()}
 
 	cmd := &cobra.Command{
@@ -41,7 +44,7 @@ func newListCommand(dockerCli *command.DockerCli) *cobra.Command {
 	return cmd
 }
 
-func runList(dockerCli *command.DockerCli, options listOptions) error {
+func runList(dockerCli command.Cli, options listOptions) error {
 	ctx := context.Background()
 	client := dockerCli.Client()
 
@@ -51,7 +54,10 @@ func runList(dockerCli *command.DockerCli, options listOptions) error {
 		return err
 	}
 
-	info := map[string]formatter.ServiceListInfo{}
+	sort.Slice(services, func(i, j int) bool {
+		return sortorder.NaturalLess(services[i].Spec.Name, services[j].Spec.Name)
+	})
+	info := map[string]ListInfo{}
 	if len(services) > 0 && !options.quiet {
 		// only non-empty services and not quiet, should we call TaskList and NodeList api
 		taskFilter := filters.NewArgs()
@@ -83,13 +89,13 @@ func runList(dockerCli *command.DockerCli, options listOptions) error {
 
 	servicesCtx := formatter.Context{
 		Output: dockerCli.Out(),
-		Format: formatter.NewServiceListFormat(format, options.quiet),
+		Format: NewListFormat(format, options.quiet),
 	}
-	return formatter.ServiceListWrite(servicesCtx, services, info)
+	return ListFormatWrite(servicesCtx, services, info)
 }
 
 // GetServicesStatus returns a map of mode and replicas
-func GetServicesStatus(services []swarm.Service, nodes []swarm.Node, tasks []swarm.Task) map[string]formatter.ServiceListInfo {
+func GetServicesStatus(services []swarm.Service, nodes []swarm.Node, tasks []swarm.Task) map[string]ListInfo {
 	running := map[string]int{}
 	tasksNoShutdown := map[string]int{}
 
@@ -110,16 +116,23 @@ func GetServicesStatus(services []swarm.Service, nodes []swarm.Node, tasks []swa
 		}
 	}
 
-	info := map[string]formatter.ServiceListInfo{}
+	info := map[string]ListInfo{}
 	for _, service := range services {
-		info[service.ID] = formatter.ServiceListInfo{}
+		info[service.ID] = ListInfo{}
 		if service.Spec.Mode.Replicated != nil && service.Spec.Mode.Replicated.Replicas != nil {
-			info[service.ID] = formatter.ServiceListInfo{
-				Mode:     "replicated",
-				Replicas: fmt.Sprintf("%d/%d", running[service.ID], *service.Spec.Mode.Replicated.Replicas),
+			if service.Spec.TaskTemplate.Placement != nil && service.Spec.TaskTemplate.Placement.MaxReplicas > 0 {
+				info[service.ID] = ListInfo{
+					Mode:     "replicated",
+					Replicas: fmt.Sprintf("%d/%d (max %d per node)", running[service.ID], *service.Spec.Mode.Replicated.Replicas, service.Spec.TaskTemplate.Placement.MaxReplicas),
+				}
+			} else {
+				info[service.ID] = ListInfo{
+					Mode:     "replicated",
+					Replicas: fmt.Sprintf("%d/%d", running[service.ID], *service.Spec.Mode.Replicated.Replicas),
+				}
 			}
 		} else if service.Spec.Mode.Global != nil {
-			info[service.ID] = formatter.ServiceListInfo{
+			info[service.ID] = ListInfo{
 				Mode:     "global",
 				Replicas: fmt.Sprintf("%d/%d", running[service.ID], tasksNoShutdown[service.ID]),
 			}

@@ -1,18 +1,21 @@
 package service
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
+	cliopts "github.com/docker/cli/opts"
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/api/types/versions"
+	"github.com/docker/docker/client"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"golang.org/x/net/context"
 )
 
-func newCreateCommand(dockerCli *command.DockerCli) *cobra.Command {
+func newCreateCommand(dockerCli command.Cli) *cobra.Command {
 	opts := newServiceOptions()
 
 	cmd := &cobra.Command{
@@ -57,12 +60,19 @@ func newCreateCommand(dockerCli *command.DockerCli) *cobra.Command {
 	flags.SetAnnotation(flagDNSSearch, "version", []string{"1.25"})
 	flags.Var(&opts.hosts, flagHost, "Set one or more custom host-to-IP mappings (host:ip)")
 	flags.SetAnnotation(flagHost, "version", []string{"1.25"})
+	flags.BoolVar(&opts.init, flagInit, false, "Use an init inside each service container to forward signals and reap processes")
+	flags.SetAnnotation(flagInit, "version", []string{"1.37"})
+	flags.Var(&opts.sysctls, flagSysCtl, "Sysctl options")
+	flags.SetAnnotation(flagSysCtl, "version", []string{"1.40"})
+
+	flags.Var(cliopts.NewListOptsRef(&opts.resources.resGenericResources, ValidateSingleGenericResource), "generic-resource", "User defined resources")
+	flags.SetAnnotation(flagHostAdd, "version", []string{"1.32"})
 
 	flags.SetInterspersed(false)
 	return cmd
 }
 
-func runCreate(dockerCli *command.DockerCli, flags *pflag.FlagSet, opts *serviceOptions) error {
+func runCreate(dockerCli command.Cli, flags *pflag.FlagSet, opts *serviceOptions) error {
 	apiClient := dockerCli.Client()
 	createOpts := types.ServiceCreateOptions{}
 
@@ -70,6 +80,10 @@ func runCreate(dockerCli *command.DockerCli, flags *pflag.FlagSet, opts *service
 
 	service, err := opts.ToService(ctx, apiClient, flags)
 	if err != nil {
+		return err
+	}
+
+	if err = validateAPIVersion(service, dockerCli.Client().ClientVersion()); err != nil {
 		return err
 	}
 
@@ -83,14 +97,8 @@ func runCreate(dockerCli *command.DockerCli, flags *pflag.FlagSet, opts *service
 		service.TaskTemplate.ContainerSpec.Secrets = secrets
 	}
 
-	specifiedConfigs := opts.configs.Value()
-	if len(specifiedConfigs) > 0 {
-		// parse and validate configs
-		configs, err := ParseConfigs(apiClient, specifiedConfigs)
-		if err != nil {
-			return err
-		}
-		service.TaskTemplate.ContainerSpec.Configs = configs
+	if err := setConfigs(apiClient, &service, opts); err != nil {
+		return err
 	}
 
 	if err := resolveServiceImageDigestContentTrust(dockerCli, &service); err != nil {
@@ -123,13 +131,51 @@ func runCreate(dockerCli *command.DockerCli, flags *pflag.FlagSet, opts *service
 
 	fmt.Fprintf(dockerCli.Out(), "%s\n", response.ID)
 
-	if opts.detach {
-		if !flags.Changed("detach") {
-			fmt.Fprintln(dockerCli.Err(), "Since --detach=false was not specified, tasks will be created in the background.\n"+
-				"In a future release, --detach=false will become the default.")
-		}
+	if opts.detach || versions.LessThan(apiClient.ClientVersion(), "1.29") {
 		return nil
 	}
 
-	return waitOnService(ctx, dockerCli, response.ID, opts)
+	return waitOnService(ctx, dockerCli, response.ID, opts.quiet)
+}
+
+// setConfigs does double duty: it both sets the ConfigReferences of the
+// service, and it sets the service CredentialSpec. This is because there is an
+// interplay between the CredentialSpec and the Config it depends on.
+func setConfigs(apiClient client.ConfigAPIClient, service *swarm.ServiceSpec, opts *serviceOptions) error {
+	specifiedConfigs := opts.configs.Value()
+	// if the user has requested to use a Config, for the CredentialSpec add it
+	// to the specifiedConfigs as a RuntimeTarget.
+	if cs := opts.credentialSpec.Value(); cs != nil && cs.Config != "" {
+		specifiedConfigs = append(specifiedConfigs, &swarm.ConfigReference{
+			ConfigName: cs.Config,
+			Runtime:    &swarm.ConfigReferenceRuntimeTarget{},
+		})
+	}
+	if len(specifiedConfigs) > 0 {
+		// parse and validate configs
+		configs, err := ParseConfigs(apiClient, specifiedConfigs)
+		if err != nil {
+			return err
+		}
+		service.TaskTemplate.ContainerSpec.Configs = configs
+		// if we have a CredentialSpec Config, find its ID and rewrite the
+		// field on the spec
+		//
+		// we check the opts instead of the service directly because there are
+		// a few layers of nullable objects in the service, which is a PITA
+		// to traverse, but the existence of the option implies that those are
+		// non-null.
+		if cs := opts.credentialSpec.Value(); cs != nil && cs.Config != "" {
+			for _, config := range configs {
+				if config.ConfigName == cs.Config {
+					service.TaskTemplate.ContainerSpec.Privileges.CredentialSpec.Config = config.ConfigID
+					// we've found the right config, no need to keep iterating
+					// through the rest of them.
+					break
+				}
+			}
+		}
+	}
+
+	return nil
 }

@@ -1,9 +1,8 @@
 package swarm
 
 import (
+	"context"
 	"fmt"
-
-	"golang.org/x/net/context"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
@@ -49,7 +48,7 @@ func runUpdate(dockerCli command.Cli, flags *pflag.FlagSet, opts swarmOptions) e
 
 	prevAutoLock := swarmInspect.Spec.EncryptionConfig.AutoLockManagers
 
-	opts.mergeSwarmSpec(&swarmInspect.Spec, flags)
+	opts.mergeSwarmSpec(&swarmInspect.Spec, flags, swarmInspect.ClusterInfo.TLSInfo.TrustRoot)
 
 	curAutoLock := swarmInspect.Spec.EncryptionConfig.AutoLockManagers
 
@@ -65,7 +64,7 @@ func runUpdate(dockerCli command.Cli, flags *pflag.FlagSet, opts swarmOptions) e
 		if err != nil {
 			return errors.Wrap(err, "could not fetch unlock key")
 		}
-		printUnlockCommand(ctx, dockerCli, unlockKeyResp.UnlockKey)
+		printUnlockCommand(dockerCli.Out(), unlockKeyResp.UnlockKey)
 	}
 
 	return nil

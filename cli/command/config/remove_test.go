@@ -1,15 +1,14 @@
 package config
 
 import (
-	"bytes"
 	"io/ioutil"
 	"strings"
 	"testing"
 
-	"github.com/docker/cli/cli/internal/test"
-	"github.com/docker/docker/pkg/testutil"
+	"github.com/docker/cli/internal/test"
 	"github.com/pkg/errors"
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
 )
 
 func TestConfigRemoveErrors(t *testing.T) {
@@ -20,7 +19,7 @@ func TestConfigRemoveErrors(t *testing.T) {
 	}{
 		{
 			args:          []string{},
-			expectedError: "requires at least 1 argument(s).",
+			expectedError: "requires at least 1 argument.",
 		},
 		{
 			args: []string{"foo"},
@@ -31,38 +30,35 @@ func TestConfigRemoveErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
 		cmd := newConfigRemoveCommand(
 			test.NewFakeCli(&fakeClient{
 				configRemoveFunc: tc.configRemoveFunc,
-			}, buf),
+			}),
 		)
 		cmd.SetArgs(tc.args)
 		cmd.SetOutput(ioutil.Discard)
-		testutil.ErrorContains(t, cmd.Execute(), tc.expectedError)
+		assert.ErrorContains(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
 func TestConfigRemoveWithName(t *testing.T) {
 	names := []string{"foo", "bar"}
-	buf := new(bytes.Buffer)
 	var removedConfigs []string
 	cli := test.NewFakeCli(&fakeClient{
 		configRemoveFunc: func(name string) error {
 			removedConfigs = append(removedConfigs, name)
 			return nil
 		},
-	}, buf)
+	})
 	cmd := newConfigRemoveCommand(cli)
 	cmd.SetArgs(names)
-	assert.NoError(t, cmd.Execute())
-	assert.Equal(t, names, strings.Split(strings.TrimSpace(buf.String()), "\n"))
-	assert.Equal(t, names, removedConfigs)
+	assert.NilError(t, cmd.Execute())
+	assert.Check(t, is.DeepEqual(names, strings.Split(strings.TrimSpace(cli.OutBuffer().String()), "\n")))
+	assert.Check(t, is.DeepEqual(names, removedConfigs))
 }
 
 func TestConfigRemoveContinueAfterError(t *testing.T) {
 	names := []string{"foo", "bar"}
-	buf := new(bytes.Buffer)
 	var removedConfigs []string
 
 	cli := test.NewFakeCli(&fakeClient{
@@ -73,10 +69,11 @@ func TestConfigRemoveContinueAfterError(t *testing.T) {
 			}
 			return nil
 		},
-	}, buf)
+	})
 
 	cmd := newConfigRemoveCommand(cli)
 	cmd.SetArgs(names)
-	assert.EqualError(t, cmd.Execute(), "error removing config: foo")
-	assert.Equal(t, names, removedConfigs)
+	cmd.SetOutput(ioutil.Discard)
+	assert.Error(t, cmd.Execute(), "error removing config: foo")
+	assert.Check(t, is.DeepEqual(names, removedConfigs))
 }

@@ -1,26 +1,30 @@
 package image
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
+	"github.com/docker/cli/cli/trust"
 	"github.com/docker/distribution/reference"
-	"github.com/docker/docker/registry"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
-type pullOptions struct {
-	remote string
-	all    bool
+// PullOptions defines what and how to pull
+type PullOptions struct {
+	remote    string
+	all       bool
+	platform  string
+	quiet     bool
+	untrusted bool
 }
 
 // NewPullCommand creates a new `docker pull` command
 func NewPullCommand(dockerCli command.Cli) *cobra.Command {
-	var opts pullOptions
+	var opts PullOptions
 
 	cmd := &cobra.Command{
 		Use:   "pull [OPTIONS] NAME[:TAG|@DIGEST]",
@@ -28,51 +32,48 @@ func NewPullCommand(dockerCli command.Cli) *cobra.Command {
 		Args:  cli.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.remote = args[0]
-			return runPull(dockerCli, opts)
+			return RunPull(dockerCli, opts)
 		},
 	}
 
 	flags := cmd.Flags()
 
 	flags.BoolVarP(&opts.all, "all-tags", "a", false, "Download all tagged images in the repository")
-	command.AddTrustVerificationFlags(flags)
+	flags.BoolVarP(&opts.quiet, "quiet", "q", false, "Suppress verbose output")
+
+	command.AddPlatformFlag(flags, &opts.platform)
+	command.AddTrustVerificationFlags(flags, &opts.untrusted, dockerCli.ContentTrustEnabled())
 
 	return cmd
 }
 
-func runPull(dockerCli command.Cli, opts pullOptions) error {
+// RunPull performs a pull against the engine based on the specified options
+func RunPull(cli command.Cli, opts PullOptions) error {
 	distributionRef, err := reference.ParseNormalizedNamed(opts.remote)
-	if err != nil {
+	switch {
+	case err != nil:
 		return err
-	}
-	if opts.all && !reference.IsNameOnly(distributionRef) {
+	case opts.all && !reference.IsNameOnly(distributionRef):
 		return errors.New("tag can't be used with --all-tags/-a")
-	}
-
-	if !opts.all && reference.IsNameOnly(distributionRef) {
+	case !opts.all && reference.IsNameOnly(distributionRef):
 		distributionRef = reference.TagNameOnly(distributionRef)
-		if tagged, ok := distributionRef.(reference.Tagged); ok {
-			fmt.Fprintf(dockerCli.Out(), "Using default tag: %s\n", tagged.Tag())
+		if tagged, ok := distributionRef.(reference.Tagged); ok && !opts.quiet {
+			fmt.Fprintf(cli.Out(), "Using default tag: %s\n", tagged.Tag())
 		}
 	}
 
-	// Resolve the Repository name from fqn to RepositoryInfo
-	repoInfo, err := registry.ParseRepositoryInfo(distributionRef)
+	ctx := context.Background()
+	imgRefAndAuth, err := trust.GetImageReferencesAndAuth(ctx, nil, AuthResolver(cli), distributionRef.String())
 	if err != nil {
 		return err
 	}
 
-	ctx := context.Background()
-
-	authConfig := command.ResolveAuthConfig(ctx, dockerCli, repoInfo.Index)
-	requestPrivilege := command.RegistryAuthenticationPrivilegedFunc(dockerCli, repoInfo.Index, "pull")
-
 	// Check if reference has a digest
 	_, isCanonical := distributionRef.(reference.Canonical)
-	if command.IsTrusted() && !isCanonical {
-		err = trustedPull(ctx, dockerCli, repoInfo, distributionRef, authConfig, requestPrivilege)
+	if !opts.untrusted && !isCanonical {
+		err = trustedPull(ctx, cli, imgRefAndAuth, opts)
 	} else {
-		err = imagePullPrivileged(ctx, dockerCli, authConfig, reference.FamiliarString(distributionRef), requestPrivilege, opts.all)
+		err = imagePullPrivileged(ctx, cli, imgRefAndAuth, opts)
 	}
 	if err != nil {
 		if strings.Contains(err.Error(), "when fetching 'plugin'") {
@@ -80,6 +81,6 @@ func runPull(dockerCli command.Cli, opts pullOptions) error {
 		}
 		return err
 	}
-
+	fmt.Fprintln(cli.Out(), imgRefAndAuth.Reference().String())
 	return nil
 }

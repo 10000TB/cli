@@ -1,20 +1,18 @@
 package swarm
 
 import (
-	"bytes"
 	"fmt"
 	"io/ioutil"
 	"testing"
 
-	"github.com/docker/cli/cli/internal/test"
+	"github.com/docker/cli/internal/test"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/pkg/errors"
 	// Import builders to get the builder function as package function
-	. "github.com/docker/cli/cli/internal/test/builders"
-	"github.com/docker/docker/pkg/testutil"
-	"github.com/docker/docker/pkg/testutil/golden"
-	"github.com/stretchr/testify/assert"
+	. "github.com/docker/cli/internal/test/builders"
+	"gotest.tools/assert"
+	"gotest.tools/golden"
 )
 
 func TestSwarmJoinTokenErrors(t *testing.T) {
@@ -90,20 +88,19 @@ func TestSwarmJoinTokenErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		cmd := newJoinTokenCommand(
-			test.NewFakeCli(&fakeClient{
-				swarmInspectFunc: tc.swarmInspectFunc,
-				swarmUpdateFunc:  tc.swarmUpdateFunc,
-				infoFunc:         tc.infoFunc,
-				nodeInspectFunc:  tc.nodeInspectFunc,
-			}, buf))
+		cli := test.NewFakeCli(&fakeClient{
+			swarmInspectFunc: tc.swarmInspectFunc,
+			swarmUpdateFunc:  tc.swarmUpdateFunc,
+			infoFunc:         tc.infoFunc,
+			nodeInspectFunc:  tc.nodeInspectFunc,
+		})
+		cmd := newJoinTokenCommand(cli)
 		cmd.SetArgs(tc.args)
 		for key, value := range tc.flags {
 			cmd.Flags().Set(key, value)
 		}
 		cmd.SetOutput(ioutil.Discard)
-		testutil.ErrorContains(t, cmd.Execute(), tc.expectedError)
+		assert.ErrorContains(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
@@ -198,20 +195,17 @@ func TestSwarmJoinToken(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		cmd := newJoinTokenCommand(
-			test.NewFakeCli(&fakeClient{
-				swarmInspectFunc: tc.swarmInspectFunc,
-				infoFunc:         tc.infoFunc,
-				nodeInspectFunc:  tc.nodeInspectFunc,
-			}, buf))
+		cli := test.NewFakeCli(&fakeClient{
+			swarmInspectFunc: tc.swarmInspectFunc,
+			infoFunc:         tc.infoFunc,
+			nodeInspectFunc:  tc.nodeInspectFunc,
+		})
+		cmd := newJoinTokenCommand(cli)
 		cmd.SetArgs(tc.args)
 		for key, value := range tc.flags {
 			cmd.Flags().Set(key, value)
 		}
-		assert.NoError(t, cmd.Execute())
-		actual := buf.String()
-		expected := golden.Get(t, []byte(actual), fmt.Sprintf("jointoken-%s.golden", tc.name))
-		testutil.EqualNormalizedString(t, testutil.RemoveSpace, actual, string(expected))
+		assert.NilError(t, cmd.Execute())
+		golden.Assert(t, cli.OutBuffer().String(), fmt.Sprintf("jointoken-%s.golden", tc.name))
 	}
 }

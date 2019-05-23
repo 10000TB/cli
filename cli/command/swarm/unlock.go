@@ -2,37 +2,34 @@ package swarm
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
+	"github.com/docker/cli/cli/streams"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh/terminal"
-	"golang.org/x/net/context"
 )
 
-type unlockOptions struct{}
-
 func newUnlockCommand(dockerCli command.Cli) *cobra.Command {
-	opts := unlockOptions{}
-
 	cmd := &cobra.Command{
 		Use:   "unlock",
 		Short: "Unlock swarm",
 		Args:  cli.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUnlock(dockerCli, opts)
+			return runUnlock(dockerCli)
 		},
 	}
 
 	return cmd
 }
 
-func runUnlock(dockerCli command.Cli, opts unlockOptions) error {
+func runUnlock(dockerCli command.Cli) error {
 	client := dockerCli.Client()
 	ctx := context.Background()
 
@@ -63,7 +60,7 @@ func runUnlock(dockerCli command.Cli, opts unlockOptions) error {
 	return client.SwarmUnlock(ctx, req)
 }
 
-func readKey(in *command.InStream, prompt string) (string, error) {
+func readKey(in *streams.In, prompt string) (string, error) {
 	if in.IsTerminal() {
 		fmt.Print(prompt)
 		dt, err := terminal.ReadPassword(int(in.FD()))

@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,7 +9,6 @@ import (
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/command/formatter"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type inspectOptions struct {
@@ -55,10 +55,10 @@ func runSecretInspect(dockerCli command.Cli, opts inspectOptions) error {
 
 	secretCtx := formatter.Context{
 		Output: dockerCli.Out(),
-		Format: formatter.NewSecretFormat(f, false),
+		Format: NewFormat(f, false),
 	}
 
-	if err := formatter.SecretInspectWrite(secretCtx, opts.names, getRef); err != nil {
+	if err := InspectFormatWrite(secretCtx, opts.names, getRef); err != nil {
 		return cli.StatusError{StatusCode: 1, Status: err.Error()}
 	}
 	return nil

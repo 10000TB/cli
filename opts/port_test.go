@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/docker/docker/api/types/swarm"
-	"github.com/docker/docker/pkg/testutil"
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
 )
 
 func TestPortOptValidSimpleSyntax(t *testing.T) {
@@ -96,11 +96,45 @@ func TestPortOptValidSimpleSyntax(t *testing.T) {
 				},
 			},
 		},
+		{
+			value: "80-82:8080/udp",
+			expected: []swarm.PortConfig{
+				{
+					Protocol:      "udp",
+					TargetPort:    8080,
+					PublishedPort: 80,
+					PublishMode:   swarm.PortConfigPublishModeIngress,
+				},
+				{
+					Protocol:      "udp",
+					TargetPort:    8080,
+					PublishedPort: 81,
+					PublishMode:   swarm.PortConfigPublishModeIngress,
+				},
+				{
+					Protocol:      "udp",
+					TargetPort:    8080,
+					PublishedPort: 82,
+					PublishMode:   swarm.PortConfigPublishModeIngress,
+				},
+			},
+		},
+		{
+			value: "80-80:8080/tcp",
+			expected: []swarm.PortConfig{
+				{
+					Protocol:      "tcp",
+					TargetPort:    8080,
+					PublishedPort: 80,
+					PublishMode:   swarm.PortConfigPublishModeIngress,
+				},
+			},
+		},
 	}
 	for _, tc := range testCases {
 		var port PortOpt
-		assert.NoError(t, port.Set(tc.value))
-		assert.Len(t, port.Value(), len(tc.expected))
+		assert.NilError(t, port.Set(tc.value))
+		assert.Check(t, is.Len(port.Value(), len(tc.expected)))
 		for _, expectedPortConfig := range tc.expected {
 			assertContains(t, port.Value(), expectedPortConfig)
 		}
@@ -190,8 +224,8 @@ func TestPortOptValidComplexSyntax(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		var port PortOpt
-		assert.NoError(t, port.Set(tc.value))
-		assert.Len(t, port.Value(), len(tc.expected))
+		assert.NilError(t, port.Set(tc.value))
+		assert.Check(t, is.Len(port.Value(), len(tc.expected)))
 		for _, expectedPortConfig := range tc.expected {
 			assertContains(t, port.Value(), expectedPortConfig)
 		}
@@ -242,7 +276,7 @@ func TestPortOptInvalidComplexSyntax(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		var port PortOpt
-		testutil.ErrorContains(t, port.Set(tc.value), tc.expectedError)
+		assert.ErrorContains(t, port.Set(tc.value), tc.expectedError)
 	}
 }
 
@@ -278,7 +312,7 @@ func TestPortOptInvalidSimpleSyntax(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		var port PortOpt
-		assert.EqualError(t, port.Set(tc.value), tc.expectedError)
+		assert.Error(t, port.Set(tc.value), tc.expectedError)
 	}
 }
 

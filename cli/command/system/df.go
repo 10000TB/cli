@@ -1,13 +1,12 @@
 package system
 
 import (
-	"errors"
+	"context"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/command/formatter"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type diskUsageOptions struct {
@@ -15,8 +14,8 @@ type diskUsageOptions struct {
 	format  string
 }
 
-// NewDiskUsageCommand creates a new cobra.Command for `docker df`
-func NewDiskUsageCommand(dockerCli *command.DockerCli) *cobra.Command {
+// newDiskUsageCommand creates a new cobra.Command for `docker df`
+func newDiskUsageCommand(dockerCli command.Cli) *cobra.Command {
 	var opts diskUsageOptions
 
 	cmd := &cobra.Command{
@@ -26,7 +25,7 @@ func NewDiskUsageCommand(dockerCli *command.DockerCli) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runDiskUsage(dockerCli, opts)
 		},
-		Tags: map[string]string{"version": "1.25"},
+		Annotations: map[string]string{"version": "1.25"},
 	}
 
 	flags := cmd.Flags()
@@ -37,11 +36,7 @@ func NewDiskUsageCommand(dockerCli *command.DockerCli) *cobra.Command {
 	return cmd
 }
 
-func runDiskUsage(dockerCli *command.DockerCli, opts diskUsageOptions) error {
-	if opts.verbose && len(opts.format) != 0 {
-		return errors.New("the verbose and the format options conflict")
-	}
-
+func runDiskUsage(dockerCli command.Cli, opts diskUsageOptions) error {
 	du, err := dockerCli.Client().DiskUsage(context.Background())
 	if err != nil {
 		return err
@@ -52,16 +47,25 @@ func runDiskUsage(dockerCli *command.DockerCli, opts diskUsageOptions) error {
 		format = formatter.TableFormatKey
 	}
 
+	var bsz int64
+	for _, bc := range du.BuildCache {
+		if !bc.Shared {
+			bsz += bc.Size
+		}
+	}
+
 	duCtx := formatter.DiskUsageContext{
 		Context: formatter.Context{
 			Output: dockerCli.Out(),
-			Format: formatter.NewDiskUsageFormat(format),
+			Format: formatter.NewDiskUsageFormat(format, opts.verbose),
 		},
-		LayersSize: du.LayersSize,
-		Images:     du.Images,
-		Containers: du.Containers,
-		Volumes:    du.Volumes,
-		Verbose:    opts.verbose,
+		LayersSize:  du.LayersSize,
+		BuilderSize: bsz,
+		BuildCache:  du.BuildCache,
+		Images:      du.Images,
+		Containers:  du.Containers,
+		Volumes:     du.Volumes,
+		Verbose:     opts.verbose,
 	}
 
 	return duCtx.Write()

@@ -1,6 +1,7 @@
 package container
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http/httputil"
@@ -9,12 +10,10 @@ import (
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/pkg/promise"
 	"github.com/docker/docker/pkg/signal"
 	"github.com/docker/docker/pkg/term"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type startOptions struct {
@@ -28,7 +27,7 @@ type startOptions struct {
 }
 
 // NewStartCommand creates a new cobra.Command for `docker start`
-func NewStartCommand(dockerCli *command.DockerCli) *cobra.Command {
+func NewStartCommand(dockerCli command.Cli) *cobra.Command {
 	var opts startOptions
 
 	cmd := &cobra.Command{
@@ -48,14 +47,17 @@ func NewStartCommand(dockerCli *command.DockerCli) *cobra.Command {
 
 	flags.StringVar(&opts.checkpoint, "checkpoint", "", "Restore from this checkpoint")
 	flags.SetAnnotation("checkpoint", "experimental", nil)
+	flags.SetAnnotation("checkpoint", "ostype", []string{"linux"})
 	flags.StringVar(&opts.checkpointDir, "checkpoint-dir", "", "Use a custom checkpoint storage directory")
 	flags.SetAnnotation("checkpoint-dir", "experimental", nil)
+	flags.SetAnnotation("checkpoint-dir", "ostype", []string{"linux"})
 	return cmd
 }
 
 // nolint: gocyclo
-func runStart(dockerCli *command.DockerCli, opts *startOptions) error {
+func runStart(dockerCli command.Cli, opts *startOptions) error {
 	ctx, cancelFun := context.WithCancel(context.Background())
+	defer cancelFun()
 
 	if opts.attach || opts.openStdin {
 		// We're going to attach to a container.
@@ -103,23 +105,28 @@ func runStart(dockerCli *command.DockerCli, opts *startOptions) error {
 			return errAttach
 		}
 		defer resp.Close()
-		cErr := promise.Go(func() error {
-			streamer := hijackedIOStreamer{
-				streams:      dockerCli,
-				inputStream:  in,
-				outputStream: dockerCli.Out(),
-				errorStream:  dockerCli.Err(),
-				resp:         resp,
-				tty:          c.Config.Tty,
-				detachKeys:   options.DetachKeys,
-			}
 
-			errHijack := streamer.stream(ctx)
-			if errHijack == nil {
-				return errAttach
-			}
-			return errHijack
-		})
+		cErr := make(chan error, 1)
+
+		go func() {
+			cErr <- func() error {
+				streamer := hijackedIOStreamer{
+					streams:      dockerCli,
+					inputStream:  in,
+					outputStream: dockerCli.Out(),
+					errorStream:  dockerCli.Err(),
+					resp:         resp,
+					tty:          c.Config.Tty,
+					detachKeys:   options.DetachKeys,
+				}
+
+				errHijack := streamer.stream(ctx)
+				if errHijack == nil {
+					return errAttach
+				}
+				return errHijack
+			}()
+		}()
 
 		// 3. We should open a channel for receiving status code of the container
 		// no matter it's detached, removed on daemon side(--rm) or exit normally.
@@ -146,12 +153,12 @@ func runStart(dockerCli *command.DockerCli, opts *startOptions) error {
 				fmt.Fprintln(dockerCli.Err(), "Error monitoring TTY size:", err)
 			}
 		}
-		if attchErr := <-cErr; attchErr != nil {
+		if attachErr := <-cErr; attachErr != nil {
 			if _, ok := err.(term.EscapeError); ok {
 				// The user entered the detach escape sequence.
 				return nil
 			}
-			return attchErr
+			return attachErr
 		}
 
 		if status := <-statusChan; status != 0 {
@@ -177,7 +184,7 @@ func runStart(dockerCli *command.DockerCli, opts *startOptions) error {
 	return nil
 }
 
-func startContainersWithoutAttachments(ctx context.Context, dockerCli *command.DockerCli, containers []string) error {
+func startContainersWithoutAttachments(ctx context.Context, dockerCli command.Cli, containers []string) error {
 	var failedContainers []string
 	for _, container := range containers {
 		if err := dockerCli.Client().ContainerStart(ctx, container, types.ContainerStartOptions{}); err != nil {

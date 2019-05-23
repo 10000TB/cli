@@ -1,9 +1,8 @@
 package registry
 
 import (
+	"context"
 	"fmt"
-
-	"golang.org/x/net/context"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
@@ -68,7 +67,7 @@ func runLogout(dockerCli command.Cli, serverAddress string) error {
 
 	fmt.Fprintf(dockerCli.Out(), "Removing login credentials for %s\n", hostnameAddress)
 	for _, r := range regsToLogout {
-		if err := dockerCli.CredentialsStore(r).Erase(r); err != nil {
+		if err := dockerCli.ConfigFile().GetCredentialsStore(r).Erase(r); err != nil {
 			fmt.Fprintf(dockerCli.Err(), "WARNING: could not erase credentials: %v\n", err)
 		}
 	}

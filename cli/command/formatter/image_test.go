@@ -9,7 +9,8 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/pkg/stringid"
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
 )
 
 func TestImageContext(t *testing.T) {
@@ -55,6 +56,26 @@ func TestImageContext(t *testing.T) {
 			i:      types.ImageSummary{},
 			digest: "sha256:d149ab53f8718e987c3a3024bb8aa0e2caadf6c0328f1d9d850b2a2a67f2819a",
 		}, "sha256:d149ab53f8718e987c3a3024bb8aa0e2caadf6c0328f1d9d850b2a2a67f2819a", ctx.Digest},
+		{
+			imageContext{
+				i: types.ImageSummary{Containers: 10},
+			}, "10", ctx.Containers,
+		},
+		{
+			imageContext{
+				i: types.ImageSummary{VirtualSize: 10000},
+			}, "10kB", ctx.VirtualSize,
+		},
+		{
+			imageContext{
+				i: types.ImageSummary{SharedSize: 10000},
+			}, "10kB", ctx.SharedSize,
+		},
+		{
+			imageContext{
+				i: types.ImageSummary{SharedSize: 5000, VirtualSize: 20000},
+			}, "15kB", ctx.UniqueSize,
+		},
 	}
 
 	for _, c := range cases {
@@ -62,8 +83,8 @@ func TestImageContext(t *testing.T) {
 		v := c.call()
 		if strings.Contains(v, ",") {
 			compareMultipleValues(t, v, c.expValue)
-		} else if v != c.expValue {
-			t.Fatalf("Expected %s, was %s\n", c.expValue, v)
+		} else {
+			assert.Check(t, is.Equal(c.expValue, v))
 		}
 	}
 }
@@ -136,6 +157,14 @@ image               <none>
 				},
 			},
 			"REPOSITORY\nimage\nimage\n<none>\n",
+		},
+		{
+			ImageContext{
+				Context: Context{
+					Format: NewImageFormat("table {{.Digest}}", true, false),
+				},
+			},
+			"DIGEST\nsha256:cbbf2f9a99b47fc460d422812b6a5adff7dfee951d8fa2e4a98caa0382cfbdbf\n<none>\n<none>\n",
 		},
 		{
 			ImageContext{
@@ -265,9 +294,9 @@ image_id: imageID3
 		testcase.context.Output = out
 		err := ImageWrite(testcase.context, images)
 		if err != nil {
-			assert.EqualError(t, err, testcase.expected)
+			assert.Error(t, err, testcase.expected)
 		} else {
-			assert.Equal(t, testcase.expected, out.String())
+			assert.Check(t, is.Equal(testcase.expected, out.String()))
 		}
 	}
 }
@@ -320,7 +349,7 @@ func TestImageContextWriteWithNoImage(t *testing.T) {
 
 	for _, context := range contexts {
 		ImageWrite(context.context, images)
-		assert.Equal(t, context.expected, out.String())
+		assert.Check(t, is.Equal(context.expected, out.String()))
 		// Clean buffer
 		out.Reset()
 	}

@@ -1,6 +1,7 @@
 package container
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/docker/cli/cli"
@@ -8,7 +9,6 @@ import (
 	"github.com/docker/cli/opts"
 	units "github.com/docker/go-units"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type pruneOptions struct {
@@ -35,7 +35,7 @@ func NewPruneCommand(dockerCli command.Cli) *cobra.Command {
 			fmt.Fprintln(dockerCli.Out(), "Total reclaimed space:", units.HumanSize(float64(spaceReclaimed)))
 			return nil
 		},
-		Tags: map[string]string{"version": "1.25"},
+		Annotations: map[string]string{"version": "1.25"},
 	}
 
 	flags := cmd.Flags()
@@ -52,12 +52,12 @@ func runPrune(dockerCli command.Cli, options pruneOptions) (spaceReclaimed uint6
 	pruneFilters := command.PruneFilters(dockerCli, options.filter.Value())
 
 	if !options.force && !command.PromptForConfirmation(dockerCli.In(), dockerCli.Out(), warning) {
-		return
+		return 0, "", nil
 	}
 
 	report, err := dockerCli.Client().ContainersPrune(context.Background(), pruneFilters)
 	if err != nil {
-		return
+		return 0, "", err
 	}
 
 	if len(report.ContainersDeleted) > 0 {
@@ -68,11 +68,11 @@ func runPrune(dockerCli command.Cli, options pruneOptions) (spaceReclaimed uint6
 		spaceReclaimed = report.SpaceReclaimed
 	}
 
-	return
+	return spaceReclaimed, output, nil
 }
 
 // RunPrune calls the Container Prune API
 // This returns the amount of space reclaimed and a detailed output string
-func RunPrune(dockerCli command.Cli, filter opts.FilterOpt) (uint64, string, error) {
+func RunPrune(dockerCli command.Cli, all bool, filter opts.FilterOpt) (uint64, string, error) {
 	return runPrune(dockerCli, pruneOptions{force: true, filter: filter})
 }

@@ -1,7 +1,7 @@
 package network
 
 import (
-	"golang.org/x/net/context"
+	"context"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
@@ -14,7 +14,7 @@ type disconnectOptions struct {
 	force     bool
 }
 
-func newDisconnectCommand(dockerCli *command.DockerCli) *cobra.Command {
+func newDisconnectCommand(dockerCli command.Cli) *cobra.Command {
 	opts := disconnectOptions{}
 
 	cmd := &cobra.Command{
@@ -34,7 +34,7 @@ func newDisconnectCommand(dockerCli *command.DockerCli) *cobra.Command {
 	return cmd
 }
 
-func runDisconnect(dockerCli *command.DockerCli, opts disconnectOptions) error {
+func runDisconnect(dockerCli command.Cli, opts disconnectOptions) error {
 	client := dockerCli.Client()
 
 	return client.NetworkDisconnect(context.Background(), opts.network, opts.container, opts.force)

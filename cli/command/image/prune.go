@@ -1,9 +1,9 @@
 package image
 
 import (
+	"context"
 	"fmt"
-
-	"golang.org/x/net/context"
+	"strings"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
@@ -37,7 +37,7 @@ func NewPruneCommand(dockerCli command.Cli) *cobra.Command {
 			fmt.Fprintln(dockerCli.Out(), "Total reclaimed space:", units.HumanSize(float64(spaceReclaimed)))
 			return nil
 		},
-		Tags: map[string]string{"version": "1.25"},
+		Annotations: map[string]string{"version": "1.25"},
 	}
 
 	flags := cmd.Flags()
@@ -56,7 +56,7 @@ Are you sure you want to continue?`
 )
 
 func runPrune(dockerCli command.Cli, options pruneOptions) (spaceReclaimed uint64, output string, err error) {
-	pruneFilters := options.filter.Value()
+	pruneFilters := options.filter.Value().Clone()
 	pruneFilters.Add("dangling", fmt.Sprintf("%v", !options.all))
 	pruneFilters = command.PruneFilters(dockerCli, pruneFilters)
 
@@ -65,27 +65,33 @@ func runPrune(dockerCli command.Cli, options pruneOptions) (spaceReclaimed uint6
 		warning = allImageWarning
 	}
 	if !options.force && !command.PromptForConfirmation(dockerCli.In(), dockerCli.Out(), warning) {
-		return
+		return 0, "", nil
 	}
 
 	report, err := dockerCli.Client().ImagesPrune(context.Background(), pruneFilters)
 	if err != nil {
-		return
+		return 0, "", err
 	}
 
 	if len(report.ImagesDeleted) > 0 {
-		output = "Deleted Images:\n"
+		var sb strings.Builder
+		sb.WriteString("Deleted Images:\n")
 		for _, st := range report.ImagesDeleted {
 			if st.Untagged != "" {
-				output += fmt.Sprintln("untagged:", st.Untagged)
+				sb.WriteString("untagged: ")
+				sb.WriteString(st.Untagged)
+				sb.WriteByte('\n')
 			} else {
-				output += fmt.Sprintln("deleted:", st.Deleted)
+				sb.WriteString("deleted: ")
+				sb.WriteString(st.Deleted)
+				sb.WriteByte('\n')
 			}
 		}
+		output = sb.String()
 		spaceReclaimed = report.SpaceReclaimed
 	}
 
-	return
+	return spaceReclaimed, output, nil
 }
 
 // RunPrune calls the Image Prune API

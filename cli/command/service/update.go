@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -15,15 +16,13 @@ import (
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/api/types/versions"
 	"github.com/docker/docker/client"
-	runconfigopts "github.com/docker/docker/runconfig/opts"
 	"github.com/docker/swarmkit/api/defaults"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"golang.org/x/net/context"
 )
 
-func newUpdateCommand(dockerCli *command.DockerCli) *cobra.Command {
+func newUpdateCommand(dockerCli command.Cli) *cobra.Command {
 	options := newServiceOptions()
 
 	cmd := &cobra.Command{
@@ -38,8 +37,8 @@ func newUpdateCommand(dockerCli *command.DockerCli) *cobra.Command {
 	flags := cmd.Flags()
 	flags.String("image", "", "Service image tag")
 	flags.Var(&ShlexOpt{}, "args", "Service command args")
-	flags.Bool("rollback", false, "Rollback to previous specification")
-	flags.SetAnnotation("rollback", "version", []string{"1.25"})
+	flags.Bool(flagRollback, false, "Rollback to previous specification")
+	flags.SetAnnotation(flagRollback, "version", []string{"1.25"})
 	flags.Bool("force", false, "Force update even if no changes require it")
 	flags.SetAnnotation("force", "version", []string{"1.25"})
 	addServiceFlags(flags, options, nil)
@@ -93,8 +92,20 @@ func newUpdateCommand(dockerCli *command.DockerCli) *cobra.Command {
 	flags.SetAnnotation(flagDNSOptionAdd, "version", []string{"1.25"})
 	flags.Var(&options.dnsSearch, flagDNSSearchAdd, "Add or update a custom DNS search domain")
 	flags.SetAnnotation(flagDNSSearchAdd, "version", []string{"1.25"})
-	flags.Var(&options.hosts, flagHostAdd, "Add or update a custom host-to-IP mapping (host:ip)")
+	flags.Var(&options.hosts, flagHostAdd, "Add a custom host-to-IP mapping (host:ip)")
 	flags.SetAnnotation(flagHostAdd, "version", []string{"1.25"})
+	flags.BoolVar(&options.init, flagInit, false, "Use an init inside each service container to forward signals and reap processes")
+	flags.SetAnnotation(flagInit, "version", []string{"1.37"})
+	flags.Var(&options.sysctls, flagSysCtlAdd, "Add or update a Sysctl option")
+	flags.SetAnnotation(flagSysCtlAdd, "version", []string{"1.40"})
+	flags.Var(newListOptsVar(), flagSysCtlRemove, "Remove a Sysctl option")
+	flags.SetAnnotation(flagSysCtlRemove, "version", []string{"1.40"})
+
+	// Add needs parsing, Remove only needs the key
+	flags.Var(newListOptsVar(), flagGenericResourcesRemove, "Remove a Generic resource")
+	flags.SetAnnotation(flagHostAdd, "version", []string{"1.32"})
+	flags.Var(newListOptsVarWithValidator(ValidateSingleGenericResource), flagGenericResourcesAdd, "Add a Generic resource")
+	flags.SetAnnotation(flagHostAdd, "version", []string{"1.32"})
 
 	return cmd
 }
@@ -103,8 +114,12 @@ func newListOptsVar() *opts.ListOpts {
 	return opts.NewListOptsRef(&[]string{}, nil)
 }
 
+func newListOptsVarWithValidator(validator opts.ValidatorFctType) *opts.ListOpts {
+	return opts.NewListOptsRef(&[]string{}, validator)
+}
+
 // nolint: gocyclo
-func runUpdate(dockerCli *command.DockerCli, flags *pflag.FlagSet, options *serviceOptions, serviceID string) error {
+func runUpdate(dockerCli command.Cli, flags *pflag.FlagSet, options *serviceOptions, serviceID string) error {
 	apiClient := dockerCli.Client()
 	ctx := context.Background()
 
@@ -113,7 +128,7 @@ func runUpdate(dockerCli *command.DockerCli, flags *pflag.FlagSet, options *serv
 		return err
 	}
 
-	rollback, err := flags.GetBool("rollback")
+	rollback, err := flags.GetBool(flagRollback)
 	if err != nil {
 		return err
 	}
@@ -131,7 +146,7 @@ func runUpdate(dockerCli *command.DockerCli, flags *pflag.FlagSet, options *serv
 		// Rollback can't be combined with other flags.
 		otherFlagsPassed := false
 		flags.VisitAll(func(f *pflag.Flag) {
-			if f.Name == "rollback" {
+			if f.Name == flagRollback || f.Name == flagDetach || f.Name == flagQuiet {
 				return
 			}
 			if flags.Changed(f.Name) {
@@ -142,7 +157,7 @@ func runUpdate(dockerCli *command.DockerCli, flags *pflag.FlagSet, options *serv
 			return errors.New("other flags may not be combined with --rollback")
 		}
 
-		if versions.LessThan(dockerCli.Client().ClientVersion(), "1.28") {
+		if versions.LessThan(apiClient.ClientVersion(), "1.28") {
 			clientSideRollback = true
 			spec = service.PreviousSpec
 			if spec == nil {
@@ -179,12 +194,17 @@ func runUpdate(dockerCli *command.DockerCli, flags *pflag.FlagSet, options *serv
 
 	spec.TaskTemplate.ContainerSpec.Secrets = updatedSecrets
 
-	updatedConfigs, err := getUpdatedConfigs(apiClient, flags, spec.TaskTemplate.ContainerSpec.Configs)
+	updatedConfigs, err := getUpdatedConfigs(apiClient, flags, spec.TaskTemplate.ContainerSpec)
 	if err != nil {
 		return err
 	}
 
 	spec.TaskTemplate.ContainerSpec.Configs = updatedConfigs
+
+	// set the credential spec value after get the updated configs, because we
+	// might need the updated configs to set the correct value of the
+	// CredentialSpec.
+	updateCredSpecConfig(flags, spec.TaskTemplate.ContainerSpec)
 
 	// only send auth if flag was set
 	sendAuth, err := flags.GetBool(flagRegistryAuth)
@@ -217,19 +237,21 @@ func runUpdate(dockerCli *command.DockerCli, flags *pflag.FlagSet, options *serv
 
 	fmt.Fprintf(dockerCli.Out(), "%s\n", serviceID)
 
-	if options.detach {
-		if !flags.Changed("detach") {
-			fmt.Fprintln(dockerCli.Err(), "Since --detach=false was not specified, tasks will be updated in the background.\n"+
-				"In a future release, --detach=false will become the default.")
-		}
+	if options.detach || versions.LessThan(apiClient.ClientVersion(), "1.29") {
 		return nil
 	}
 
-	return waitOnService(ctx, dockerCli, serviceID, options)
+	return waitOnService(ctx, dockerCli, serviceID, options.quiet)
 }
 
 // nolint: gocyclo
 func updateService(ctx context.Context, apiClient client.NetworkAPIClient, flags *pflag.FlagSet, spec *swarm.ServiceSpec) error {
+	updateBoolPtr := func(flag string, field **bool) {
+		if flags.Changed(flag) {
+			b, _ := flags.GetBool(flag)
+			*field = &b
+		}
+	}
 	updateString := func(flag string, field *string) {
 		if flags.Changed(flag) {
 			*field, _ = flags.GetString(flag)
@@ -256,7 +278,7 @@ func updateService(ctx context.Context, apiClient client.NetworkAPIClient, flags
 
 	updateDurationOpt := func(flag string, field **time.Duration) {
 		if flags.Changed(flag) {
-			val := *flags.Lookup(flag).Value.(*DurationOpt).Value()
+			val := *flags.Lookup(flag).Value.(*opts.DurationOpt).Value()
 			*field = &val
 		}
 	}
@@ -274,12 +296,26 @@ func updateService(ctx context.Context, apiClient client.NetworkAPIClient, flags
 		}
 	}
 
-	cspec := &spec.TaskTemplate.ContainerSpec
+	updateIsolation := func(flag string, field *container.Isolation) error {
+		if flags.Changed(flag) {
+			val, _ := flags.GetString(flag)
+			*field = container.Isolation(val)
+		}
+		return nil
+	}
+
+	cspec := spec.TaskTemplate.ContainerSpec
 	task := &spec.TaskTemplate
 
 	taskResources := func() *swarm.ResourceRequirements {
 		if task.Resources == nil {
 			task.Resources = &swarm.ResourceRequirements{}
+		}
+		if task.Resources.Limits == nil {
+			task.Resources.Limits = &swarm.Resources{}
+		}
+		if task.Resources.Reservations == nil {
+			task.Resources.Reservations = &swarm.Resources{}
 		}
 		return task.Resources
 	}
@@ -293,19 +329,34 @@ func updateService(ctx context.Context, apiClient client.NetworkAPIClient, flags
 	updateString(flagWorkdir, &cspec.Dir)
 	updateString(flagUser, &cspec.User)
 	updateString(flagHostname, &cspec.Hostname)
+	updateBoolPtr(flagInit, &cspec.Init)
+	if err := updateIsolation(flagIsolation, &cspec.Isolation); err != nil {
+		return err
+	}
 	if err := updateMounts(flags, &cspec.Mounts); err != nil {
 		return err
 	}
 
-	if flags.Changed(flagLimitCPU) || flags.Changed(flagLimitMemory) {
-		taskResources().Limits = &swarm.Resources{}
+	updateSysCtls(flags, &task.ContainerSpec.Sysctls)
+
+	if anyChanged(flags, flagLimitCPU, flagLimitMemory) {
+		taskResources().Limits = spec.TaskTemplate.Resources.Limits
 		updateInt64Value(flagLimitCPU, &task.Resources.Limits.NanoCPUs)
 		updateInt64Value(flagLimitMemory, &task.Resources.Limits.MemoryBytes)
 	}
-	if flags.Changed(flagReserveCPU) || flags.Changed(flagReserveMemory) {
-		taskResources().Reservations = &swarm.Resources{}
+
+	if anyChanged(flags, flagReserveCPU, flagReserveMemory) {
+		taskResources().Reservations = spec.TaskTemplate.Resources.Reservations
 		updateInt64Value(flagReserveCPU, &task.Resources.Reservations.NanoCPUs)
 		updateInt64Value(flagReserveMemory, &task.Resources.Reservations.MemoryBytes)
+	}
+
+	if err := addGenericResources(flags, task); err != nil {
+		return err
+	}
+
+	if err := removeGenericResources(flags, task); err != nil {
+		return err
 	}
 
 	updateDurationOpt(flagStopGracePeriod, &cspec.StopGracePeriod)
@@ -345,6 +396,10 @@ func updateService(ctx context.Context, apiClient client.NetworkAPIClient, flags
 
 	if err := updateReplicas(flags, &spec.Mode); err != nil {
 		return err
+	}
+
+	if anyChanged(flags, flagMaxReplicas) {
+		updateUint64(flagMaxReplicas, &task.Placement.MaxReplicas)
 	}
 
 	if anyChanged(flags, flagUpdateParallelism, flagUpdateDelay, flagUpdateMonitor, flagUpdateFailureAction, flagUpdateMaxFailureRatio, flagUpdateOrder) {
@@ -464,6 +519,72 @@ func anyChanged(flags *pflag.FlagSet, fields ...string) bool {
 	return false
 }
 
+func addGenericResources(flags *pflag.FlagSet, spec *swarm.TaskSpec) error {
+	if !flags.Changed(flagGenericResourcesAdd) {
+		return nil
+	}
+
+	if spec.Resources == nil {
+		spec.Resources = &swarm.ResourceRequirements{}
+	}
+
+	if spec.Resources.Reservations == nil {
+		spec.Resources.Reservations = &swarm.Resources{}
+	}
+
+	values := flags.Lookup(flagGenericResourcesAdd).Value.(*opts.ListOpts).GetAll()
+	generic, err := ParseGenericResources(values)
+	if err != nil {
+		return err
+	}
+
+	m, err := buildGenericResourceMap(spec.Resources.Reservations.GenericResources)
+	if err != nil {
+		return err
+	}
+
+	for _, toAddRes := range generic {
+		m[toAddRes.DiscreteResourceSpec.Kind] = toAddRes
+	}
+
+	spec.Resources.Reservations.GenericResources = buildGenericResourceList(m)
+
+	return nil
+}
+
+func removeGenericResources(flags *pflag.FlagSet, spec *swarm.TaskSpec) error {
+	// Can only be Discrete Resources
+	if !flags.Changed(flagGenericResourcesRemove) {
+		return nil
+	}
+
+	if spec.Resources == nil {
+		spec.Resources = &swarm.ResourceRequirements{}
+	}
+
+	if spec.Resources.Reservations == nil {
+		spec.Resources.Reservations = &swarm.Resources{}
+	}
+
+	values := flags.Lookup(flagGenericResourcesRemove).Value.(*opts.ListOpts).GetAll()
+
+	m, err := buildGenericResourceMap(spec.Resources.Reservations.GenericResources)
+	if err != nil {
+		return err
+	}
+
+	for _, toRemoveRes := range values {
+		if _, ok := m[toRemoveRes]; !ok {
+			return fmt.Errorf("could not find generic-resource `%s` to remove it", toRemoveRes)
+		}
+
+		delete(m, toRemoveRes)
+	}
+
+	spec.Resources.Reservations.GenericResources = buildGenericResourceList(m)
+	return nil
+}
+
 func updatePlacementConstraints(flags *pflag.FlagSet, placement *swarm.Placement) {
 	if flags.Changed(flagConstraintAdd) {
 		values := flags.Lookup(flagConstraintAdd).Value.(*opts.ListOpts).GetAll()
@@ -504,9 +625,8 @@ func updatePlacementPreferences(flags *pflag.FlagSet, placement *swarm.Placement
 	}
 
 	if flags.Changed(flagPlacementPrefAdd) {
-		for _, addition := range flags.Lookup(flagPlacementPrefAdd).Value.(*placementPrefOpts).prefs {
-			newPrefs = append(newPrefs, addition)
-		}
+		newPrefs = append(newPrefs,
+			flags.Lookup(flagPlacementPrefAdd).Value.(*placementPrefOpts).prefs...)
 	}
 
 	placement.Preferences = newPrefs
@@ -519,7 +639,7 @@ func updateContainerLabels(flags *pflag.FlagSet, field *map[string]string) {
 		}
 
 		values := flags.Lookup(flagContainerLabelAdd).Value.(*opts.ListOpts).GetAll()
-		for key, value := range runconfigopts.ConvertKVStringsToMap(values) {
+		for key, value := range opts.ConvertKVStringsToMap(values) {
 			(*field)[key] = value
 		}
 	}
@@ -539,7 +659,7 @@ func updateLabels(flags *pflag.FlagSet, field *map[string]string) {
 		}
 
 		values := flags.Lookup(flagLabelAdd).Value.(*opts.ListOpts).GetAll()
-		for key, value := range runconfigopts.ConvertKVStringsToMap(values) {
+		for key, value := range opts.ConvertKVStringsToMap(values) {
 			(*field)[key] = value
 		}
 	}
@@ -548,6 +668,25 @@ func updateLabels(flags *pflag.FlagSet, field *map[string]string) {
 		toRemove := flags.Lookup(flagLabelRemove).Value.(*opts.ListOpts).GetAll()
 		for _, label := range toRemove {
 			delete(*field, label)
+		}
+	}
+}
+
+func updateSysCtls(flags *pflag.FlagSet, field *map[string]string) {
+	if *field != nil && flags.Changed(flagSysCtlRemove) {
+		values := flags.Lookup(flagSysCtlRemove).Value.(*opts.ListOpts).GetAll()
+		for key := range opts.ConvertKVStringsToMap(values) {
+			delete(*field, key)
+		}
+	}
+	if flags.Changed(flagSysCtlAdd) {
+		if *field == nil {
+			*field = map[string]string{}
+		}
+
+		values := flags.Lookup(flagSysCtlAdd).Value.(*opts.ListOpts).GetAll()
+		for key, value := range opts.ConvertKVStringsToMap(values) {
+			(*field)[key] = value
 		}
 	}
 }
@@ -597,20 +736,56 @@ func getUpdatedSecrets(apiClient client.SecretAPIClient, flags *pflag.FlagSet, s
 	return newSecrets, nil
 }
 
-func getUpdatedConfigs(apiClient client.ConfigAPIClient, flags *pflag.FlagSet, configs []*swarm.ConfigReference) ([]*swarm.ConfigReference, error) {
-	newConfigs := []*swarm.ConfigReference{}
+func getUpdatedConfigs(apiClient client.ConfigAPIClient, flags *pflag.FlagSet, spec *swarm.ContainerSpec) ([]*swarm.ConfigReference, error) {
+	var (
+		// credSpecConfigName stores the name of the config specified by the
+		// credential-spec flag. if a Runtime target Config with this name is
+		// already in the containerSpec, then this value will be set to
+		// emptystring in the removeConfigs stage. otherwise, a ConfigReference
+		// will be created to pass to ParseConfigs to get the ConfigID.
+		credSpecConfigName string
+		// credSpecConfigID stores the ID of the credential spec config if that
+		// config is being carried over from the old set of references
+		credSpecConfigID string
+	)
 
-	toRemove := buildToRemoveSet(flags, flagConfigRemove)
-	for _, config := range configs {
-		if _, exists := toRemove[config.ConfigName]; !exists {
-			newConfigs = append(newConfigs, config)
+	if flags.Changed(flagCredentialSpec) {
+		credSpec := flags.Lookup(flagCredentialSpec).Value.(*credentialSpecOpt).Value()
+		credSpecConfigName = credSpec.Config
+	} else {
+		// if the credential spec flag has not changed, then check if there
+		// already is a credentialSpec. if there is one, and it's for a Config,
+		// then it's from the old object, and its value is the config ID. we
+		// need this so we don't remove the config if the credential spec is
+		// not being updated.
+		if spec.Privileges != nil && spec.Privileges.CredentialSpec != nil {
+			if config := spec.Privileges.CredentialSpec.Config; config != "" {
+				credSpecConfigID = config
+			}
 		}
 	}
 
-	if flags.Changed(flagConfigAdd) {
-		values := flags.Lookup(flagConfigAdd).Value.(*opts.ConfigOpt).Value()
+	newConfigs := removeConfigs(flags, spec, credSpecConfigName, credSpecConfigID)
 
-		addConfigs, err := ParseConfigs(apiClient, values)
+	// resolveConfigs is a slice of any new configs that need to have the ID
+	// resolved
+	resolveConfigs := []*swarm.ConfigReference{}
+
+	if flags.Changed(flagConfigAdd) {
+		resolveConfigs = append(resolveConfigs, flags.Lookup(flagConfigAdd).Value.(*opts.ConfigOpt).Value()...)
+	}
+
+	// if credSpecConfigNameis non-empty at this point, it means its a new
+	// config, and we need to resolve its ID accordingly.
+	if credSpecConfigName != "" {
+		resolveConfigs = append(resolveConfigs, &swarm.ConfigReference{
+			ConfigName: credSpecConfigName,
+			Runtime:    &swarm.ConfigReferenceRuntimeTarget{},
+		})
+	}
+
+	if len(resolveConfigs) > 0 {
+		addConfigs, err := ParseConfigs(apiClient, resolveConfigs)
 		if err != nil {
 			return nil, err
 		}
@@ -618,6 +793,42 @@ func getUpdatedConfigs(apiClient client.ConfigAPIClient, flags *pflag.FlagSet, c
 	}
 
 	return newConfigs, nil
+}
+
+// removeConfigs figures out which configs in the existing spec should be kept
+// after the update.
+func removeConfigs(flags *pflag.FlagSet, spec *swarm.ContainerSpec, credSpecName, credSpecID string) []*swarm.ConfigReference {
+	keepConfigs := []*swarm.ConfigReference{}
+
+	toRemove := buildToRemoveSet(flags, flagConfigRemove)
+	// all configs in spec.Configs should have both a Name and ID, because
+	// they come from an already-accepted spec.
+	for _, config := range spec.Configs {
+		// if the config is a Runtime target, make sure it's still in use right
+		// now, the only use for Runtime target is credential specs.  if, in
+		// the future, more uses are added, then this check will need to be
+		// made more intelligent.
+		if config.Runtime != nil {
+			// if we're carrying over a credential spec explicitly (because the
+			// user passed --credential-spec with the same config name) then we
+			// should match on credSpecName. if we're carrying over a
+			// credential spec implicitly (because the user did not pass any
+			// --credential-spec flag) then we should match on credSpecID. in
+			// either case, we're keeping the config that already exists.
+			if config.ConfigName == credSpecName || config.ConfigID == credSpecID {
+				keepConfigs = append(keepConfigs, config)
+			}
+			// continue the loop, to skip the part where we check if the config
+			// is in toRemove.
+			continue
+		}
+
+		if _, exists := toRemove[config.ConfigName]; !exists {
+			keepConfigs = append(keepConfigs, config)
+		}
+	}
+
+	return keepConfigs
 }
 
 func envKey(value string) string {
@@ -654,20 +865,6 @@ func removeItems(
 	return newSeq
 }
 
-type byMountSource []mounttypes.Mount
-
-func (m byMountSource) Len() int      { return len(m) }
-func (m byMountSource) Swap(i, j int) { m[i], m[j] = m[j], m[i] }
-func (m byMountSource) Less(i, j int) bool {
-	a, b := m[i], m[j]
-
-	if a.Source == b.Source {
-		return a.Target < b.Target
-	}
-
-	return a.Source < b.Source
-}
-
 func updateMounts(flags *pflag.FlagSet, mounts *[]mounttypes.Mount) error {
 	mountsByTarget := map[string]mounttypes.Mount{}
 
@@ -697,7 +894,15 @@ func updateMounts(flags *pflag.FlagSet, mounts *[]mounttypes.Mount) error {
 			newMounts = append(newMounts, mount)
 		}
 	}
-	sort.Sort(byMountSource(newMounts))
+	sort.Slice(newMounts, func(i, j int) bool {
+		a, b := newMounts[i], newMounts[j]
+
+		if a.Source == b.Source {
+			return a.Target < b.Target
+		}
+
+		return a.Source < b.Source
+	})
 	*mounts = newMounts
 	return nil
 }
@@ -787,16 +992,6 @@ func updateDNSConfig(flags *pflag.FlagSet, config **swarm.DNSConfig) error {
 	return nil
 }
 
-type byPortConfig []swarm.PortConfig
-
-func (r byPortConfig) Len() int      { return len(r) }
-func (r byPortConfig) Swap(i, j int) { r[i], r[j] = r[j], r[i] }
-func (r byPortConfig) Less(i, j int) bool {
-	// We convert PortConfig into `port/protocol`, e.g., `80/tcp`
-	// In updatePorts we already filter out with map so there is duplicate entries
-	return portConfigToString(&r[i]) < portConfigToString(&r[j])
-}
-
 func portConfigToString(portConfig *swarm.PortConfig) string {
 	protocol := portConfig.Protocol
 	mode := portConfig.PublishMode
@@ -845,7 +1040,11 @@ portLoop:
 	}
 
 	// Sort the PortConfig to avoid unnecessary updates
-	sort.Sort(byPortConfig(newPorts))
+	sort.Slice(newPorts, func(i, j int) bool {
+		// We convert PortConfig into `port/protocol`, e.g., `80/tcp`
+		// In updatePorts we already filter out with map so there is duplicate entries
+		return portConfigToString(&newPorts[i]) < portConfigToString(&newPorts[j])
+	})
 	*portConfig = newPorts
 	return nil
 }
@@ -874,44 +1073,99 @@ func updateReplicas(flags *pflag.FlagSet, serviceMode *swarm.ServiceMode) error 
 	return nil
 }
 
-func updateHosts(flags *pflag.FlagSet, hosts *[]string) error {
-	// Combine existing Hosts (in swarmkit format) with the host to add (convert to swarmkit format)
-	if flags.Changed(flagHostAdd) {
-		values := convertExtraHostsToSwarmHosts(flags.Lookup(flagHostAdd).Value.(*opts.ListOpts).GetAll())
-		*hosts = append(*hosts, values...)
-	}
-	// Remove duplicate
-	*hosts = removeDuplicates(*hosts)
+type hostMapping struct {
+	IPAddr string
+	Host   string
+}
 
-	keysToRemove := make(map[string]struct{})
+// updateHosts performs a diff between existing host entries, entries to be
+// removed, and entries to be added. Host entries preserve the order in which they
+// were added, as the specification mentions that in case multiple entries for a
+// host exist, the first entry should be used (by default).
+//
+// Note that, even though unsupported by the the CLI, the service specs format
+// allow entries with both a _canonical_ hostname, and one or more aliases
+// in an entry (IP-address canonical_hostname [alias ...])
+//
+// Entries can be removed by either a specific `<host-name>:<ip-address>` mapping,
+// or by `<host>` alone:
+//
+// - If both IP-address and host-name is provided, the hostname is removed only
+//   from entries that match the given IP-address.
+// - If only a host-name is provided, the hostname is removed from any entry it
+//   is part of (either as canonical host-name, or as alias).
+// - If, after removing the host-name from an entry, no host-names remain in
+//   the entry, the entry itself is removed.
+//
+// For example, the list of host-entries before processing could look like this:
+//
+//    hosts = &[]string{
+//        "127.0.0.2 host3 host1 host2 host4",
+//        "127.0.0.1 host1 host4",
+//        "127.0.0.3 host1",
+//        "127.0.0.1 host1",
+//    }
+//
+// Removing `host1` removes every occurrence:
+//
+//    hosts = &[]string{
+//        "127.0.0.2 host3 host2 host4",
+//        "127.0.0.1 host4",
+//    }
+//
+// Removing `host1:127.0.0.1` on the other hand, only remove the host if the
+// IP-address matches:
+//
+//    hosts = &[]string{
+//        "127.0.0.2 host3 host1 host2 host4",
+//        "127.0.0.1 host4",
+//        "127.0.0.3 host1",
+//    }
+func updateHosts(flags *pflag.FlagSet, hosts *[]string) error {
+	var toRemove []hostMapping
 	if flags.Changed(flagHostRemove) {
-		var empty struct{}
 		extraHostsToRemove := flags.Lookup(flagHostRemove).Value.(*opts.ListOpts).GetAll()
 		for _, entry := range extraHostsToRemove {
-			key := strings.SplitN(entry, ":", 2)[0]
-			keysToRemove[key] = empty
+			v := strings.SplitN(entry, ":", 2)
+			if len(v) > 1 {
+				toRemove = append(toRemove, hostMapping{IPAddr: v[1], Host: v[0]})
+			} else {
+				toRemove = append(toRemove, hostMapping{Host: v[0]})
+			}
 		}
 	}
 
-	newHosts := []string{}
+	var newHosts []string
 	for _, entry := range *hosts {
-		// Since this is in swarmkit format, we need to find the key, which is canonical_hostname of:
+		// Since this is in SwarmKit format, we need to find the key, which is canonical_hostname of:
 		// IP_address canonical_hostname [aliases...]
 		parts := strings.Fields(entry)
-		if len(parts) > 1 {
-			key := parts[1]
-			if _, exists := keysToRemove[key]; !exists {
-				newHosts = append(newHosts, entry)
+		if len(parts) == 0 {
+			continue
+		}
+		ip := parts[0]
+		hostNames := parts[1:]
+		for _, rm := range toRemove {
+			if rm.IPAddr != "" && rm.IPAddr != ip {
+				continue
 			}
-		} else {
-			newHosts = append(newHosts, entry)
+			for i, h := range hostNames {
+				if h == rm.Host {
+					hostNames = append(hostNames[:i], hostNames[i+1:]...)
+				}
+			}
+		}
+		if len(hostNames) > 0 {
+			newHosts = append(newHosts, fmt.Sprintf("%s %s", ip, strings.Join(hostNames, " ")))
 		}
 	}
 
-	// Sort so that result is predictable.
-	sort.Strings(newHosts)
-
-	*hosts = newHosts
+	// Append new hosts (in SwarmKit format)
+	if flags.Changed(flagHostAdd) {
+		values := convertExtraHostsToSwarmHosts(flags.Lookup(flagHostAdd).Value.(*opts.ListOpts).GetAll())
+		newHosts = append(newHosts, values...)
+	}
+	*hosts = removeDuplicates(newHosts)
 	return nil
 }
 
@@ -933,7 +1187,7 @@ func updateLogDriver(flags *pflag.FlagSet, taskTemplate *swarm.TaskSpec) error {
 
 	taskTemplate.LogDriver = &swarm.Driver{
 		Name:    name,
-		Options: runconfigopts.ConvertKVStringsToMap(flags.Lookup(flagLogOpt).Value.(*opts.ListOpts).GetAll()),
+		Options: opts.ConvertKVStringsToMap(flags.Lookup(flagLogOpt).Value.(*opts.ListOpts).GetAll()),
 	}
 
 	return nil
@@ -963,15 +1217,15 @@ func updateHealthcheck(flags *pflag.FlagSet, containerSpec *swarm.ContainerSpec)
 		containerSpec.Healthcheck.Test = nil
 	}
 	if flags.Changed(flagHealthInterval) {
-		val := *flags.Lookup(flagHealthInterval).Value.(*PositiveDurationOpt).Value()
+		val := *flags.Lookup(flagHealthInterval).Value.(*opts.PositiveDurationOpt).Value()
 		containerSpec.Healthcheck.Interval = val
 	}
 	if flags.Changed(flagHealthTimeout) {
-		val := *flags.Lookup(flagHealthTimeout).Value.(*PositiveDurationOpt).Value()
+		val := *flags.Lookup(flagHealthTimeout).Value.(*opts.PositiveDurationOpt).Value()
 		containerSpec.Healthcheck.Timeout = val
 	}
 	if flags.Changed(flagHealthStartPeriod) {
-		val := *flags.Lookup(flagHealthStartPeriod).Value.(*PositiveDurationOpt).Value()
+		val := *flags.Lookup(flagHealthStartPeriod).Value.(*opts.PositiveDurationOpt).Value()
 		containerSpec.Healthcheck.StartPeriod = val
 	}
 	if flags.Changed(flagHealthRetries) {
@@ -988,14 +1242,6 @@ func updateHealthcheck(flags *pflag.FlagSet, containerSpec *swarm.ContainerSpec)
 	return nil
 }
 
-type byNetworkTarget []swarm.NetworkAttachmentConfig
-
-func (m byNetworkTarget) Len() int      { return len(m) }
-func (m byNetworkTarget) Swap(i, j int) { m[i], m[j] = m[j], m[i] }
-func (m byNetworkTarget) Less(i, j int) bool {
-	return m[i].Target < m[j].Target
-}
-
 func updateNetworks(ctx context.Context, apiClient client.NetworkAPIClient, flags *pflag.FlagSet, spec *swarm.ServiceSpec) error {
 	// spec.TaskTemplate.Networks takes precedence over the deprecated
 	// spec.Networks field. If spec.Network is in use, we'll migrate those
@@ -1009,7 +1255,7 @@ func updateNetworks(ctx context.Context, apiClient client.NetworkAPIClient, flag
 	toRemove := buildToRemoveSet(flags, flagNetworkRemove)
 	idsToRemove := make(map[string]struct{})
 	for networkIDOrName := range toRemove {
-		network, err := apiClient.NetworkInspect(ctx, networkIDOrName, false)
+		network, err := apiClient.NetworkInspect(ctx, networkIDOrName, types.NetworkInspectOptions{Scope: "swarm"})
 		if err != nil {
 			return err
 		}
@@ -1029,21 +1275,70 @@ func updateNetworks(ctx context.Context, apiClient client.NetworkAPIClient, flag
 
 	if flags.Changed(flagNetworkAdd) {
 		values := flags.Lookup(flagNetworkAdd).Value.(*opts.NetworkOpt)
-		networks, err := convertNetworks(ctx, apiClient, *values)
-		if err != nil {
-			return err
-		}
+		networks := convertNetworks(*values)
 		for _, network := range networks {
-			if _, exists := existingNetworks[network.Target]; exists {
+			nwID, err := resolveNetworkID(ctx, apiClient, network.Target)
+			if err != nil {
+				return err
+			}
+			if _, exists := existingNetworks[nwID]; exists {
 				return errors.Errorf("service is already attached to network %s", network.Target)
 			}
+			network.Target = nwID
 			newNetworks = append(newNetworks, network)
 			existingNetworks[network.Target] = struct{}{}
 		}
 	}
 
-	sort.Sort(byNetworkTarget(newNetworks))
+	sort.Slice(newNetworks, func(i, j int) bool {
+		return newNetworks[i].Target < newNetworks[j].Target
+	})
 
 	spec.TaskTemplate.Networks = newNetworks
 	return nil
+}
+
+// updateCredSpecConfig updates the value of the credential spec Config field
+// to the config ID if the credential spec has changed. it mutates the passed
+// spec. it does not handle the case where the credential spec specifies a
+// config that does not exist -- that case is handled as part of
+// getUpdatedConfigs
+func updateCredSpecConfig(flags *pflag.FlagSet, containerSpec *swarm.ContainerSpec) {
+	if flags.Changed(flagCredentialSpec) {
+		credSpecOpt := flags.Lookup(flagCredentialSpec)
+		// if the flag has changed, and the value is empty string, then we
+		// should remove any credential spec that might be present
+		if credSpecOpt.Value.String() == "" {
+			if containerSpec.Privileges != nil {
+				containerSpec.Privileges.CredentialSpec = nil
+			}
+			return
+		}
+
+		// otherwise, set the credential spec to be the parsed value
+		credSpec := credSpecOpt.Value.(*credentialSpecOpt).Value()
+
+		// if this is a Config credential spec, we we still need to replace the
+		// value of credSpec.Config with the config ID instead of Name.
+		if credSpec.Config != "" {
+			for _, config := range containerSpec.Configs {
+				// if the config name matches, then set the config ID. we do
+				// not need to worry about if this is a Runtime target or not.
+				// even if it is not a Runtime target, getUpdatedConfigs
+				// ensures that a Runtime target for this config exists, and
+				// the Name is unique so the ID is correct no matter the
+				// target.
+				if config.ConfigName == credSpec.Config {
+					credSpec.Config = config.ConfigID
+					break
+				}
+			}
+		}
+
+		if containerSpec.Privileges == nil {
+			containerSpec.Privileges = &swarm.Privileges{}
+		}
+
+		containerSpec.Privileges.CredentialSpec = credSpec
+	}
 }

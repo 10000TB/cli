@@ -1,17 +1,15 @@
 package node
 
 import (
-	"bytes"
 	"io/ioutil"
 	"testing"
 
-	"github.com/docker/cli/cli/internal/test"
+	"github.com/docker/cli/internal/test"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/pkg/errors"
+	"gotest.tools/assert"
 	// Import builders to get the builder function as package function
-	. "github.com/docker/cli/cli/internal/test/builders"
-	"github.com/docker/docker/pkg/testutil"
-	"github.com/stretchr/testify/assert"
+	. "github.com/docker/cli/internal/test/builders"
 )
 
 func TestNodePromoteErrors(t *testing.T) {
@@ -40,20 +38,18 @@ func TestNodePromoteErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
 		cmd := newPromoteCommand(
 			test.NewFakeCli(&fakeClient{
 				nodeInspectFunc: tc.nodeInspectFunc,
 				nodeUpdateFunc:  tc.nodeUpdateFunc,
-			}, buf))
+			}))
 		cmd.SetArgs(tc.args)
 		cmd.SetOutput(ioutil.Discard)
-		testutil.ErrorContains(t, cmd.Execute(), tc.expectedError)
+		assert.ErrorContains(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
 func TestNodePromoteNoChange(t *testing.T) {
-	buf := new(bytes.Buffer)
 	cmd := newPromoteCommand(
 		test.NewFakeCli(&fakeClient{
 			nodeInspectFunc: func() (swarm.Node, []byte, error) {
@@ -65,13 +61,12 @@ func TestNodePromoteNoChange(t *testing.T) {
 				}
 				return nil
 			},
-		}, buf))
+		}))
 	cmd.SetArgs([]string{"nodeID"})
-	assert.NoError(t, cmd.Execute())
+	assert.NilError(t, cmd.Execute())
 }
 
 func TestNodePromoteMultipleNode(t *testing.T) {
-	buf := new(bytes.Buffer)
 	cmd := newPromoteCommand(
 		test.NewFakeCli(&fakeClient{
 			nodeInspectFunc: func() (swarm.Node, []byte, error) {
@@ -83,7 +78,7 @@ func TestNodePromoteMultipleNode(t *testing.T) {
 				}
 				return nil
 			},
-		}, buf))
+		}))
 	cmd.SetArgs([]string{"nodeID1", "nodeID2"})
-	assert.NoError(t, cmd.Execute())
+	assert.NilError(t, cmd.Execute())
 }

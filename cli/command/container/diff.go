@@ -1,12 +1,13 @@
 package container
 
 import (
+	"context"
+
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/command/formatter"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type diffOptions struct {
@@ -14,7 +15,7 @@ type diffOptions struct {
 }
 
 // NewDiffCommand creates a new cobra.Command for `docker diff`
-func NewDiffCommand(dockerCli *command.DockerCli) *cobra.Command {
+func NewDiffCommand(dockerCli command.Cli) *cobra.Command {
 	var opts diffOptions
 
 	return &cobra.Command{
@@ -28,7 +29,7 @@ func NewDiffCommand(dockerCli *command.DockerCli) *cobra.Command {
 	}
 }
 
-func runDiff(dockerCli *command.DockerCli, opts *diffOptions) error {
+func runDiff(dockerCli command.Cli, opts *diffOptions) error {
 	if opts.container == "" {
 		return errors.New("Container name cannot be empty")
 	}
@@ -40,7 +41,7 @@ func runDiff(dockerCli *command.DockerCli, opts *diffOptions) error {
 	}
 	diffCtx := formatter.Context{
 		Output: dockerCli.Out(),
-		Format: formatter.NewDiffFormat("{{.Type}} {{.Path}}"),
+		Format: NewDiffFormat("{{.Type}} {{.Path}}"),
 	}
-	return formatter.DiffWrite(diffCtx, changes)
+	return DiffFormatWrite(diffCtx, changes)
 }

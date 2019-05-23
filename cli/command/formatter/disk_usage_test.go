@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
+	"gotest.tools/golden"
 )
 
 func TestDiskUsageContextFormatWrite(t *testing.T) {
@@ -16,29 +18,42 @@ func TestDiskUsageContextFormatWrite(t *testing.T) {
 		{
 			DiskUsageContext{
 				Context: Context{
-					Format: NewDiskUsageFormat("table"),
+					Format: NewDiskUsageFormat("table", false),
 				},
 				Verbose: false},
 			`TYPE                TOTAL               ACTIVE              SIZE                RECLAIMABLE
 Images              0                   0                   0B                  0B
 Containers          0                   0                   0B                  0B
 Local Volumes       0                   0                   0B                  0B
+Build Cache         0                   0                   0B                  0B
 `,
 		},
 		{
-			DiskUsageContext{Verbose: true},
+			DiskUsageContext{Verbose: true, Context: Context{Format: NewDiskUsageFormat("table", true)}},
 			`Images space usage:
 
-REPOSITORY          TAG                 IMAGE ID            CREATED ago         SIZE                SHARED SIZE         UNIQUE SiZE         CONTAINERS
+REPOSITORY          TAG                 IMAGE ID            CREATED             SIZE                SHARED SIZE         UNIQUE SIZE         CONTAINERS
 
 Containers space usage:
 
-CONTAINER ID        IMAGE               COMMAND             LOCAL VOLUMES       SIZE                CREATED ago         STATUS              NAMES
+CONTAINER ID        IMAGE               COMMAND             LOCAL VOLUMES       SIZE                CREATED             STATUS              NAMES
 
 Local Volumes space usage:
 
 VOLUME NAME         LINKS               SIZE
+
+Build cache usage: 0B
+
+CACHE ID            CACHE TYPE          SIZE                CREATED             LAST USED           USAGE               SHARED
 `,
+		},
+		{
+			DiskUsageContext{Verbose: true, Context: Context{Format: NewDiskUsageFormat("raw", true)}},
+			``,
+		},
+		{
+			DiskUsageContext{Verbose: true, Context: Context{Format: NewDiskUsageFormat("{{json .}}", true)}},
+			`{"Images":[],"Containers":[],"Volumes":[],"BuildCache":[]}`,
 		},
 		// Errors
 		{
@@ -63,53 +78,32 @@ VOLUME NAME         LINKS               SIZE
 		{
 			DiskUsageContext{
 				Context: Context{
-					Format: NewDiskUsageFormat("table"),
+					Format: NewDiskUsageFormat("table", false),
 				},
 			},
 			`TYPE                TOTAL               ACTIVE              SIZE                RECLAIMABLE
 Images              0                   0                   0B                  0B
 Containers          0                   0                   0B                  0B
 Local Volumes       0                   0                   0B                  0B
+Build Cache         0                   0                   0B                  0B
 `,
 		},
 		{
 			DiskUsageContext{
 				Context: Context{
-					Format: NewDiskUsageFormat("table {{.Type}}\t{{.Active}}"),
+					Format: NewDiskUsageFormat("table {{.Type}}\t{{.Active}}", false),
 				},
 			},
-			`TYPE                ACTIVE
-Images              0
-Containers          0
-Local Volumes       0
-`,
+			string(golden.Get(t, "disk-usage-context-write-custom.golden")),
 		},
 		// Raw Format
 		{
 			DiskUsageContext{
 				Context: Context{
-					Format: NewDiskUsageFormat("raw"),
+					Format: NewDiskUsageFormat("raw", false),
 				},
 			},
-			`type: Images
-total: 0
-active: 0
-size: 0B
-reclaimable: 0B
-
-type: Containers
-total: 0
-active: 0
-size: 0B
-reclaimable: 0B
-
-type: Local Volumes
-total: 0
-active: 0
-size: 0B
-reclaimable: 0B
-
-`,
+			string(golden.Get(t, "disk-usage-raw-format.golden")),
 		},
 	}
 
@@ -117,9 +111,9 @@ reclaimable: 0B
 		out := bytes.NewBufferString("")
 		testcase.context.Output = out
 		if err := testcase.context.Write(); err != nil {
-			assert.Equal(t, testcase.expected, err.Error())
+			assert.Check(t, is.Equal(testcase.expected, err.Error()))
 		} else {
-			assert.Equal(t, testcase.expected, out.String())
+			assert.Check(t, is.Equal(testcase.expected, out.String()))
 		}
 	}
 }

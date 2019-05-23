@@ -1,6 +1,7 @@
 package container
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http/httputil"
@@ -9,30 +10,28 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
+	"github.com/docker/cli/opts"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/pkg/promise"
 	"github.com/docker/docker/pkg/signal"
 	"github.com/docker/docker/pkg/term"
-	"github.com/docker/libnetwork/resolvconf/dns"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"golang.org/x/net/context"
 )
 
 type runOptions struct {
+	createOptions
 	detach     bool
 	sigProxy   bool
-	name       string
 	detachKeys string
 }
 
 // NewRunCommand create a new `docker run` command
-func NewRunCommand(dockerCli *command.DockerCli) *cobra.Command {
+func NewRunCommand(dockerCli command.Cli) *cobra.Command {
 	var opts runOptions
 	var copts *containerOptions
 
@@ -57,55 +56,49 @@ func NewRunCommand(dockerCli *command.DockerCli) *cobra.Command {
 	flags.BoolVar(&opts.sigProxy, "sig-proxy", true, "Proxy received signals to the process")
 	flags.StringVar(&opts.name, "name", "", "Assign a name to the container")
 	flags.StringVar(&opts.detachKeys, "detach-keys", "", "Override the key sequence for detaching a container")
+	flags.StringVar(&opts.createOptions.pull, "pull", PullImageMissing,
+		`Pull image before running ("`+PullImageAlways+`"|"`+PullImageMissing+`"|"`+PullImageNever+`")`)
 
 	// Add an explicit help that doesn't have a `-h` to prevent the conflict
 	// with hostname
 	flags.Bool("help", false, "Print usage")
 
-	command.AddTrustVerificationFlags(flags)
+	command.AddPlatformFlag(flags, &opts.platform)
+	command.AddTrustVerificationFlags(flags, &opts.untrusted, dockerCli.ContentTrustEnabled())
 	copts = addFlags(flags)
 	return cmd
 }
 
-func warnOnOomKillDisable(hostConfig container.HostConfig, stderr io.Writer) {
-	if hostConfig.OomKillDisable != nil && *hostConfig.OomKillDisable && hostConfig.Memory == 0 {
-		fmt.Fprintln(stderr, "WARNING: Disabling the OOM killer on containers without setting a '-m/--memory' limit may be dangerous.")
-	}
-}
-
-// check the DNS settings passed via --dns against localhost regexp to warn if
-// they are trying to set a DNS to a localhost address
-func warnOnLocalhostDNS(hostConfig container.HostConfig, stderr io.Writer) {
-	for _, dnsIP := range hostConfig.DNS {
-		if dns.IsLocalhost(dnsIP) {
-			fmt.Fprintf(stderr, "WARNING: Localhost DNS setting (--dns=%s) may fail in containers.\n", dnsIP)
-			return
+func runRun(dockerCli command.Cli, flags *pflag.FlagSet, ropts *runOptions, copts *containerOptions) error {
+	proxyConfig := dockerCli.ConfigFile().ParseProxyConfig(dockerCli.Client().DaemonHost(), opts.ConvertKVStringsToMapWithNil(copts.env.GetAll()))
+	newEnv := []string{}
+	for k, v := range proxyConfig {
+		if v == nil {
+			newEnv = append(newEnv, k)
+		} else {
+			newEnv = append(newEnv, fmt.Sprintf("%s=%s", k, *v))
 		}
 	}
-}
-
-func runRun(dockerCli *command.DockerCli, flags *pflag.FlagSet, opts *runOptions, copts *containerOptions) error {
-	containerConfig, err := parse(flags, copts)
+	copts.env = *opts.NewListOptsRef(&newEnv, nil)
+	containerConfig, err := parse(flags, copts, dockerCli.ServerInfo().OSType)
 	// just in case the parse does not exit
 	if err != nil {
 		reportError(dockerCli.Err(), "run", err.Error(), true)
 		return cli.StatusError{StatusCode: 125}
 	}
-	return runContainer(dockerCli, opts, copts, containerConfig)
+	if err = validateAPIVersion(containerConfig, dockerCli.Client().ClientVersion()); err != nil {
+		reportError(dockerCli.Err(), "run", err.Error(), true)
+		return cli.StatusError{StatusCode: 125}
+	}
+	return runContainer(dockerCli, ropts, copts, containerConfig)
 }
 
 // nolint: gocyclo
-func runContainer(dockerCli *command.DockerCli, opts *runOptions, copts *containerOptions, containerConfig *containerConfig) error {
+func runContainer(dockerCli command.Cli, opts *runOptions, copts *containerOptions, containerConfig *containerConfig) error {
 	config := containerConfig.Config
 	hostConfig := containerConfig.HostConfig
 	stdout, stderr := dockerCli.Out(), dockerCli.Err()
 	client := dockerCli.Client()
-
-	// TODO: pass this as an argument
-	cmdPath := "run"
-
-	warnOnOomKillDisable(*hostConfig, stderr)
-	warnOnLocalhostDNS(*hostConfig, stderr)
 
 	config.ArgsEscaped = false
 
@@ -137,16 +130,18 @@ func runContainer(dockerCli *command.DockerCli, opts *runOptions, copts *contain
 	}
 
 	ctx, cancelFun := context.WithCancel(context.Background())
+	defer cancelFun()
 
-	createResponse, err := createContainer(ctx, dockerCli, containerConfig, opts.name)
+	createResponse, err := createContainer(ctx, dockerCli, containerConfig, &opts.createOptions)
 	if err != nil {
-		reportError(stderr, cmdPath, err.Error(), true)
+		reportError(stderr, "run", err.Error(), true)
 		return runStartContainerErr(err)
 	}
 	if opts.sigProxy {
 		sigc := ForwardAllSignals(ctx, dockerCli, createResponse.ID)
 		defer signal.StopCatch(sigc)
 	}
+
 	var (
 		waitDisplayID chan struct{}
 		errCh         chan error
@@ -166,10 +161,11 @@ func runContainer(dockerCli *command.DockerCli, opts *runOptions, copts *contain
 		}
 
 		close, err := attachContainer(ctx, dockerCli, &errCh, config, createResponse.ID)
-		defer close()
+
 		if err != nil {
 			return err
 		}
+		defer close()
 	}
 
 	statusChan := waitExitOrRemoved(ctx, dockerCli, createResponse.ID, copts.autoRemove)
@@ -184,7 +180,7 @@ func runContainer(dockerCli *command.DockerCli, opts *runOptions, copts *contain
 			<-errCh
 		}
 
-		reportError(stderr, cmdPath, err.Error(), false)
+		reportError(stderr, "run", err.Error(), false)
 		if copts.autoRemove {
 			// wait container to be removed
 			<-statusChan
@@ -266,22 +262,27 @@ func attachContainer(
 		return nil, errAttach
 	}
 
-	*errCh = promise.Go(func() error {
-		streamer := hijackedIOStreamer{
-			streams:      dockerCli,
-			inputStream:  in,
-			outputStream: out,
-			errorStream:  cerr,
-			resp:         resp,
-			tty:          config.Tty,
-			detachKeys:   options.DetachKeys,
-		}
+	ch := make(chan error, 1)
+	*errCh = ch
 
-		if errHijack := streamer.stream(ctx); errHijack != nil {
-			return errHijack
-		}
-		return errAttach
-	})
+	go func() {
+		ch <- func() error {
+			streamer := hijackedIOStreamer{
+				streams:      dockerCli,
+				inputStream:  in,
+				outputStream: out,
+				errorStream:  cerr,
+				resp:         resp,
+				tty:          config.Tty,
+				detachKeys:   options.DetachKeys,
+			}
+
+			if errHijack := streamer.stream(ctx); errHijack != nil {
+				return errHijack
+			}
+			return errAttach
+		}()
+	}()
 	return resp.Close, nil
 }
 

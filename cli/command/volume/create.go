@@ -1,16 +1,15 @@
 package volume
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/opts"
 	volumetypes "github.com/docker/docker/api/types/volume"
-	runconfigopts "github.com/docker/docker/runconfig/opts"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type createOptions struct {
@@ -23,7 +22,7 @@ type createOptions struct {
 func newCreateCommand(dockerCli command.Cli) *cobra.Command {
 	options := createOptions{
 		driverOpts: *opts.NewMapOpts(nil, nil),
-		labels:     opts.NewListOpts(opts.ValidateEnv),
+		labels:     opts.NewListOpts(opts.ValidateLabel),
 	}
 
 	cmd := &cobra.Command{
@@ -53,11 +52,11 @@ func newCreateCommand(dockerCli command.Cli) *cobra.Command {
 func runCreate(dockerCli command.Cli, options createOptions) error {
 	client := dockerCli.Client()
 
-	volReq := volumetypes.VolumesCreateBody{
+	volReq := volumetypes.VolumeCreateBody{
 		Driver:     options.driver,
 		DriverOpts: options.driverOpts.GetAll(),
 		Name:       options.name,
-		Labels:     runconfigopts.ConvertKVStringsToMap(options.labels.GetAll()),
+		Labels:     opts.ConvertKVStringsToMap(options.labels.GetAll()),
 	}
 
 	vol, err := client.VolumeCreate(context.Background(), volReq)

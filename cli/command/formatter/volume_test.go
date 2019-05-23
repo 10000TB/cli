@@ -3,12 +3,14 @@ package formatter
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/pkg/stringid"
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
 )
 
 func TestVolumeContext(t *testing.T) {
@@ -131,9 +133,9 @@ foobar_bar
 		testcase.context.Output = out
 		err := VolumeWrite(testcase.context, volumes)
 		if err != nil {
-			assert.EqualError(t, err, testcase.expected)
+			assert.Error(t, err, testcase.expected)
 		} else {
-			assert.Equal(t, testcase.expected, out.String())
+			assert.Check(t, is.Equal(testcase.expected, out.String()))
 		}
 	}
 }
@@ -153,12 +155,11 @@ func TestVolumeContextWriteJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		t.Logf("Output: line %d: %s", i, line)
+		msg := fmt.Sprintf("Output: line %d: %s", i, line)
 		var m map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &m); err != nil {
-			t.Fatal(err)
-		}
-		assert.Equal(t, expectedJSONs[i], m)
+		err := json.Unmarshal([]byte(line), &m)
+		assert.NilError(t, err, msg)
+		assert.Check(t, is.DeepEqual(expectedJSONs[i], m), msg)
 	}
 }
 
@@ -173,11 +174,10 @@ func TestVolumeContextWriteJSONField(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
-		t.Logf("Output: line %d: %s", i, line)
+		msg := fmt.Sprintf("Output: line %d: %s", i, line)
 		var s string
-		if err := json.Unmarshal([]byte(line), &s); err != nil {
-			t.Fatal(err)
-		}
-		assert.Equal(t, volumes[i].Name, s)
+		err := json.Unmarshal([]byte(line), &s)
+		assert.NilError(t, err, msg)
+		assert.Check(t, is.Equal(volumes[i].Name, s), msg)
 	}
 }

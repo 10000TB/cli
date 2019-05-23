@@ -1,19 +1,17 @@
 package image
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"strings"
 	"testing"
 
-	"github.com/docker/cli/cli/internal/test"
+	"github.com/docker/cli/internal/test"
 	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/pkg/testutil"
-	"github.com/docker/docker/pkg/testutil/golden"
 	"github.com/pkg/errors"
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
+	"gotest.tools/golden"
 )
 
 func TestNewLoadCommandErrors(t *testing.T) {
@@ -27,7 +25,7 @@ func TestNewLoadCommandErrors(t *testing.T) {
 		{
 			name:          "wrong-args",
 			args:          []string{"arg"},
-			expectedError: "accepts no argument(s).",
+			expectedError: "accepts no arguments.",
 		},
 		{
 			name:          "input-to-terminal",
@@ -43,22 +41,22 @@ func TestNewLoadCommandErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		cli := test.NewFakeCli(&fakeClient{imageLoadFunc: tc.imageLoadFunc}, new(bytes.Buffer))
+		cli := test.NewFakeCli(&fakeClient{imageLoadFunc: tc.imageLoadFunc})
 		cli.In().SetIsTerminal(tc.isTerminalIn)
 		cmd := NewLoadCommand(cli)
 		cmd.SetOutput(ioutil.Discard)
 		cmd.SetArgs(tc.args)
-		testutil.ErrorContains(t, cmd.Execute(), tc.expectedError)
+		assert.ErrorContains(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
 func TestNewLoadCommandInvalidInput(t *testing.T) {
 	expectedError := "open *"
-	cmd := NewLoadCommand(test.NewFakeCli(&fakeClient{}, new(bytes.Buffer)))
+	cmd := NewLoadCommand(test.NewFakeCli(&fakeClient{}))
 	cmd.SetOutput(ioutil.Discard)
 	cmd.SetArgs([]string{"--input", "*"})
 	err := cmd.Execute()
-	testutil.ErrorContains(t, err, expectedError)
+	assert.ErrorContains(t, err, expectedError)
 }
 
 func TestNewLoadCommandSuccess(t *testing.T) {
@@ -92,14 +90,12 @@ func TestNewLoadCommandSuccess(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
-		cmd := NewLoadCommand(test.NewFakeCli(&fakeClient{imageLoadFunc: tc.imageLoadFunc}, buf))
+		cli := test.NewFakeCli(&fakeClient{imageLoadFunc: tc.imageLoadFunc})
+		cmd := NewLoadCommand(cli)
 		cmd.SetOutput(ioutil.Discard)
 		cmd.SetArgs(tc.args)
 		err := cmd.Execute()
-		assert.NoError(t, err)
-		actual := buf.String()
-		expected := string(golden.Get(t, []byte(actual), fmt.Sprintf("load-command-success.%s.golden", tc.name))[:])
-		testutil.EqualNormalizedString(t, testutil.RemoveSpace, actual, expected)
+		assert.NilError(t, err)
+		golden.Assert(t, cli.OutBuffer().String(), fmt.Sprintf("load-command-success.%s.golden", tc.name))
 	}
 }

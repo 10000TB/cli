@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strconv"
@@ -8,71 +9,21 @@ import (
 	"time"
 
 	"github.com/docker/cli/opts"
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/swarm"
+	"github.com/docker/docker/api/types/versions"
 	"github.com/docker/docker/client"
-	runconfigopts "github.com/docker/docker/runconfig/opts"
 	"github.com/docker/swarmkit/api"
 	"github.com/docker/swarmkit/api/defaults"
-	shlex "github.com/flynn-archive/go-shlex"
 	gogotypes "github.com/gogo/protobuf/types"
+	"github.com/google/shlex"
 	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
-	"golang.org/x/net/context"
 )
 
 type int64Value interface {
 	Value() int64
-}
-
-// PositiveDurationOpt is an option type for time.Duration that uses a pointer.
-// It bahave similarly to DurationOpt but only allows positive duration values.
-type PositiveDurationOpt struct {
-	DurationOpt
-}
-
-// Set a new value on the option. Setting a negative duration value will cause
-// an error to be returned.
-func (d *PositiveDurationOpt) Set(s string) error {
-	err := d.DurationOpt.Set(s)
-	if err != nil {
-		return err
-	}
-	if *d.DurationOpt.value < 0 {
-		return errors.Errorf("duration cannot be negative")
-	}
-	return nil
-}
-
-// DurationOpt is an option type for time.Duration that uses a pointer. This
-// allows us to get nil values outside, instead of defaulting to 0
-type DurationOpt struct {
-	value *time.Duration
-}
-
-// Set a new value on the option
-func (d *DurationOpt) Set(s string) error {
-	v, err := time.ParseDuration(s)
-	d.value = &v
-	return err
-}
-
-// Type returns the type of this option, which will be displayed in `--help` output
-func (d *DurationOpt) Type() string {
-	return "duration"
-}
-
-// String returns a string repr of this option
-func (d *DurationOpt) String() string {
-	if d.value != nil {
-		return d.value.String()
-	}
-	return ""
-}
-
-// Value returns the time.Duration
-func (d *DurationOpt) Value() *time.Duration {
-	return d.value
 }
 
 // Uint64Opt represents a uint64.
@@ -272,30 +223,37 @@ func (opts updateOptions) rollbackConfig(flags *pflag.FlagSet) *swarm.UpdateConf
 }
 
 type resourceOptions struct {
-	limitCPU      opts.NanoCPUs
-	limitMemBytes opts.MemBytes
-	resCPU        opts.NanoCPUs
-	resMemBytes   opts.MemBytes
+	limitCPU            opts.NanoCPUs
+	limitMemBytes       opts.MemBytes
+	resCPU              opts.NanoCPUs
+	resMemBytes         opts.MemBytes
+	resGenericResources []string
 }
 
-func (r *resourceOptions) ToResourceRequirements() *swarm.ResourceRequirements {
+func (r *resourceOptions) ToResourceRequirements() (*swarm.ResourceRequirements, error) {
+	generic, err := ParseGenericResources(r.resGenericResources)
+	if err != nil {
+		return nil, err
+	}
+
 	return &swarm.ResourceRequirements{
 		Limits: &swarm.Resources{
 			NanoCPUs:    r.limitCPU.Value(),
 			MemoryBytes: r.limitMemBytes.Value(),
 		},
 		Reservations: &swarm.Resources{
-			NanoCPUs:    r.resCPU.Value(),
-			MemoryBytes: r.resMemBytes.Value(),
+			NanoCPUs:         r.resCPU.Value(),
+			MemoryBytes:      r.resMemBytes.Value(),
+			GenericResources: generic,
 		},
-	}
+	}, nil
 }
 
 type restartPolicyOptions struct {
 	condition   string
-	delay       DurationOpt
+	delay       opts.DurationOpt
 	maxAttempts Uint64Opt
-	window      DurationOpt
+	window      opts.DurationOpt
 }
 
 func defaultRestartPolicy() *swarm.RestartPolicy {
@@ -373,12 +331,25 @@ func (c *credentialSpecOpt) Set(value string) error {
 	c.source = value
 	c.value = &swarm.CredentialSpec{}
 	switch {
+	case strings.HasPrefix(value, "config://"):
+		// NOTE(dperny): we allow the user to specify the value of
+		// CredentialSpec Config using the Name of the config, but the API
+		// requires the ID of the config. For simplicity, we will parse
+		// whatever value is provided into the "Config" field, but before
+		// making API calls, we may need to swap the Config Name for the ID.
+		// Therefore, this isn't the definitive location for the value of
+		// Config that is passed to the API.
+		c.value.Config = strings.TrimPrefix(value, "config://")
 	case strings.HasPrefix(value, "file://"):
 		c.value.File = strings.TrimPrefix(value, "file://")
 	case strings.HasPrefix(value, "registry://"):
 		c.value.Registry = strings.TrimPrefix(value, "registry://")
+	case value == "":
+		// if the value of the flag is an empty string, that means there is no
+		// CredentialSpec needed. This is useful for removing a CredentialSpec
+		// during a service update.
 	default:
-		return errors.New("Invalid credential spec - value must be prefixed file:// or registry:// followed by a value")
+		return errors.New(`invalid credential spec: value must be prefixed with "config://", "file://", or "registry://"`)
 	}
 
 	return nil
@@ -396,18 +367,21 @@ func (c *credentialSpecOpt) Value() *swarm.CredentialSpec {
 	return c.value
 }
 
-func convertNetworks(ctx context.Context, apiClient client.NetworkAPIClient, networks opts.NetworkOpt) ([]swarm.NetworkAttachmentConfig, error) {
+func resolveNetworkID(ctx context.Context, apiClient client.NetworkAPIClient, networkIDOrName string) (string, error) {
+	nw, err := apiClient.NetworkInspect(ctx, networkIDOrName, types.NetworkInspectOptions{Scope: "swarm"})
+	return nw.ID, err
+}
+
+func convertNetworks(networks opts.NetworkOpt) []swarm.NetworkAttachmentConfig {
 	var netAttach []swarm.NetworkAttachmentConfig
 	for _, net := range networks.Value() {
-		networkIDOrName := net.Target
-		_, err := apiClient.NetworkInspect(ctx, networkIDOrName, false)
-		if err != nil {
-			return nil, err
-		}
-		netAttach = append(netAttach, swarm.NetworkAttachmentConfig{Target: net.Target, Aliases: net.Aliases, DriverOpts: net.DriverOpts})
+		netAttach = append(netAttach, swarm.NetworkAttachmentConfig{
+			Target:     net.Target,
+			Aliases:    net.Aliases,
+			DriverOpts: net.DriverOpts,
+		})
 	}
-	sort.Sort(byNetworkTarget(netAttach))
-	return netAttach, nil
+	return netAttach
 }
 
 type endpointOptions struct {
@@ -439,16 +413,16 @@ func (ldo *logDriverOptions) toLogDriver() *swarm.Driver {
 	// set the log driver only if specified.
 	return &swarm.Driver{
 		Name:    ldo.name,
-		Options: runconfigopts.ConvertKVStringsToMap(ldo.opts.GetAll()),
+		Options: opts.ConvertKVStringsToMap(ldo.opts.GetAll()),
 	}
 }
 
 type healthCheckOptions struct {
 	cmd           string
-	interval      PositiveDurationOpt
-	timeout       PositiveDurationOpt
+	interval      opts.PositiveDurationOpt
+	timeout       opts.PositiveDurationOpt
 	retries       int
-	startPeriod   PositiveDurationOpt
+	startPeriod   opts.PositiveDurationOpt
 	noHealthcheck bool
 }
 
@@ -520,6 +494,7 @@ type serviceOptions struct {
 	user            string
 	groups          opts.ListOpts
 	credentialSpec  credentialSpecOpt
+	init            bool
 	stopSignal      string
 	tty             bool
 	readOnly        bool
@@ -528,9 +503,10 @@ type serviceOptions struct {
 	dnsSearch       opts.ListOpts
 	dnsOption       opts.ListOpts
 	hosts           opts.ListOpts
+	sysctls         opts.ListOpts
 
 	resources resourceOptions
-	stopGrace DurationOpt
+	stopGrace opts.DurationOpt
 
 	replicas Uint64Opt
 	mode     string
@@ -538,6 +514,7 @@ type serviceOptions struct {
 	restartPolicy  restartPolicyOptions
 	constraints    opts.ListOpts
 	placementPrefs placementPrefOpts
+	maxReplicas    uint64
 	update         updateOptions
 	rollback       updateOptions
 	networks       opts.NetworkOpt
@@ -551,13 +528,15 @@ type serviceOptions struct {
 	healthcheck healthCheckOptions
 	secrets     opts.SecretOpt
 	configs     opts.ConfigOpt
+
+	isolation string
 }
 
 func newServiceOptions() *serviceOptions {
 	return &serviceOptions{
-		labels:          opts.NewListOpts(opts.ValidateEnv),
+		labels:          opts.NewListOpts(opts.ValidateLabel),
 		constraints:     opts.NewListOpts(nil),
-		containerLabels: opts.NewListOpts(opts.ValidateEnv),
+		containerLabels: opts.NewListOpts(opts.ValidateLabel),
 		env:             opts.NewListOpts(opts.ValidateEnv),
 		envFile:         opts.NewListOpts(nil),
 		groups:          opts.NewListOpts(nil),
@@ -566,39 +545,44 @@ func newServiceOptions() *serviceOptions {
 		dnsOption:       opts.NewListOpts(nil),
 		dnsSearch:       opts.NewListOpts(opts.ValidateDNSSearch),
 		hosts:           opts.NewListOpts(opts.ValidateExtraHost),
+		sysctls:         opts.NewListOpts(nil),
 	}
 }
 
-func (opts *serviceOptions) ToServiceMode() (swarm.ServiceMode, error) {
+func (options *serviceOptions) ToServiceMode() (swarm.ServiceMode, error) {
 	serviceMode := swarm.ServiceMode{}
-	switch opts.mode {
+	switch options.mode {
 	case "global":
-		if opts.replicas.Value() != nil {
+		if options.replicas.Value() != nil {
 			return serviceMode, errors.Errorf("replicas can only be used with replicated mode")
+		}
+
+		if options.maxReplicas > 0 {
+			return serviceMode, errors.New("replicas-max-per-node can only be used with replicated mode")
 		}
 
 		serviceMode.Global = &swarm.GlobalService{}
 	case "replicated":
 		serviceMode.Replicated = &swarm.ReplicatedService{
-			Replicas: opts.replicas.Value(),
+			Replicas: options.replicas.Value(),
 		}
 	default:
-		return serviceMode, errors.Errorf("Unknown mode: %s, only replicated and global supported", opts.mode)
+		return serviceMode, errors.Errorf("Unknown mode: %s, only replicated and global supported", options.mode)
 	}
 	return serviceMode, nil
 }
 
-func (opts *serviceOptions) ToStopGracePeriod(flags *pflag.FlagSet) *time.Duration {
+func (options *serviceOptions) ToStopGracePeriod(flags *pflag.FlagSet) *time.Duration {
 	if flags.Changed(flagStopGracePeriod) {
-		return opts.stopGrace.Value()
+		return options.stopGrace.Value()
 	}
 	return nil
 }
 
-func (opts *serviceOptions) ToService(ctx context.Context, apiClient client.NetworkAPIClient, flags *pflag.FlagSet) (swarm.ServiceSpec, error) {
+func (options *serviceOptions) ToService(ctx context.Context, apiClient client.NetworkAPIClient, flags *pflag.FlagSet) (swarm.ServiceSpec, error) {
 	var service swarm.ServiceSpec
 
-	envVariables, err := runconfigopts.ReadKVStrings(opts.envFile.GetAll(), opts.env.GetAll())
+	envVariables, err := opts.ReadKVEnvStrings(options.envFile.GetAll(), options.env.GetAll())
 	if err != nil {
 		return service, err
 	}
@@ -617,68 +601,84 @@ func (opts *serviceOptions) ToService(ctx context.Context, apiClient client.Netw
 		currentEnv = append(currentEnv, env)
 	}
 
-	healthConfig, err := opts.healthcheck.toHealthConfig()
+	healthConfig, err := options.healthcheck.toHealthConfig()
 	if err != nil {
 		return service, err
 	}
 
-	serviceMode, err := opts.ToServiceMode()
+	serviceMode, err := options.ToServiceMode()
 	if err != nil {
 		return service, err
 	}
 
-	networks, err := convertNetworks(ctx, apiClient, opts.networks)
+	networks := convertNetworks(options.networks)
+	for i, net := range networks {
+		nwID, err := resolveNetworkID(ctx, apiClient, net.Target)
+		if err != nil {
+			return service, err
+		}
+		networks[i].Target = nwID
+	}
+	sort.Slice(networks, func(i, j int) bool {
+		return networks[i].Target < networks[j].Target
+	})
+
+	resources, err := options.resources.ToResourceRequirements()
 	if err != nil {
 		return service, err
 	}
 
 	service = swarm.ServiceSpec{
 		Annotations: swarm.Annotations{
-			Name:   opts.name,
-			Labels: runconfigopts.ConvertKVStringsToMap(opts.labels.GetAll()),
+			Name:   options.name,
+			Labels: opts.ConvertKVStringsToMap(options.labels.GetAll()),
 		},
 		TaskTemplate: swarm.TaskSpec{
-			ContainerSpec: swarm.ContainerSpec{
-				Image:      opts.image,
-				Args:       opts.args,
-				Command:    opts.entrypoint.Value(),
+			ContainerSpec: &swarm.ContainerSpec{
+				Image:      options.image,
+				Args:       options.args,
+				Command:    options.entrypoint.Value(),
 				Env:        currentEnv,
-				Hostname:   opts.hostname,
-				Labels:     runconfigopts.ConvertKVStringsToMap(opts.containerLabels.GetAll()),
-				Dir:        opts.workdir,
-				User:       opts.user,
-				Groups:     opts.groups.GetAll(),
-				StopSignal: opts.stopSignal,
-				TTY:        opts.tty,
-				ReadOnly:   opts.readOnly,
-				Mounts:     opts.mounts.Value(),
+				Hostname:   options.hostname,
+				Labels:     opts.ConvertKVStringsToMap(options.containerLabels.GetAll()),
+				Dir:        options.workdir,
+				User:       options.user,
+				Groups:     options.groups.GetAll(),
+				StopSignal: options.stopSignal,
+				TTY:        options.tty,
+				ReadOnly:   options.readOnly,
+				Mounts:     options.mounts.Value(),
+				Init:       &options.init,
 				DNSConfig: &swarm.DNSConfig{
-					Nameservers: opts.dns.GetAll(),
-					Search:      opts.dnsSearch.GetAll(),
-					Options:     opts.dnsOption.GetAll(),
+					Nameservers: options.dns.GetAll(),
+					Search:      options.dnsSearch.GetAll(),
+					Options:     options.dnsOption.GetAll(),
 				},
-				Hosts:           convertExtraHostsToSwarmHosts(opts.hosts.GetAll()),
-				StopGracePeriod: opts.ToStopGracePeriod(flags),
+				Hosts:           convertExtraHostsToSwarmHosts(options.hosts.GetAll()),
+				StopGracePeriod: options.ToStopGracePeriod(flags),
 				Healthcheck:     healthConfig,
+				Isolation:       container.Isolation(options.isolation),
+				Sysctls:         opts.ConvertKVStringsToMap(options.sysctls.GetAll()),
 			},
 			Networks:      networks,
-			Resources:     opts.resources.ToResourceRequirements(),
-			RestartPolicy: opts.restartPolicy.ToRestartPolicy(flags),
+			Resources:     resources,
+			RestartPolicy: options.restartPolicy.ToRestartPolicy(flags),
 			Placement: &swarm.Placement{
-				Constraints: opts.constraints.GetAll(),
-				Preferences: opts.placementPrefs.prefs,
+				Constraints: options.constraints.GetAll(),
+				Preferences: options.placementPrefs.prefs,
+				MaxReplicas: options.maxReplicas,
 			},
-			LogDriver: opts.logDriver.toLogDriver(),
+			LogDriver: options.logDriver.toLogDriver(),
 		},
 		Mode:           serviceMode,
-		UpdateConfig:   opts.update.updateConfig(flags),
-		RollbackConfig: opts.update.rollbackConfig(flags),
-		EndpointSpec:   opts.endpoint.ToEndpointSpec(),
+		UpdateConfig:   options.update.updateConfig(flags),
+		RollbackConfig: options.rollback.rollbackConfig(flags),
+		EndpointSpec:   options.endpoint.ToEndpointSpec(),
 	}
 
-	if opts.credentialSpec.Value() != nil {
+	if options.credentialSpec.String() != "" && options.credentialSpec.Value() != nil {
 		service.TaskTemplate.ContainerSpec.Privileges = &swarm.Privileges{
-			CredentialSpec: opts.credentialSpec.Value(),
+			CredentialSpec: options.credentialSpec.Value(),
 		}
 	}
 
@@ -736,6 +736,11 @@ func buildServiceDefaultFlagMapping() flagDefaults {
 	return defaultFlagValues
 }
 
+func addDetachFlag(flags *pflag.FlagSet, detach *bool) {
+	flags.BoolVarP(detach, flagDetach, "d", false, "Exit immediately instead of waiting for the service to converge")
+	flags.SetAnnotation(flagDetach, "version", []string{"1.29"})
+}
+
 // addServiceFlags adds all flags that are common to both `create` and `update`.
 // Any flags that are not common are added separately in the individual command
 func addServiceFlags(flags *pflag.FlagSet, opts *serviceOptions, defaultFlagValues flagDefaults) {
@@ -746,8 +751,8 @@ func addServiceFlags(flags *pflag.FlagSet, opts *serviceOptions, defaultFlagValu
 		return desc
 	}
 
-	flags.BoolVarP(&opts.detach, "detach", "d", true, "Exit immediately instead of waiting for the service to converge")
-	flags.BoolVarP(&opts.quiet, "quiet", "q", false, "Suppress progress output")
+	addDetachFlag(flags, &opts.detach)
+	flags.BoolVarP(&opts.quiet, flagQuiet, "q", false, "Suppress progress output")
 
 	flags.StringVarP(&opts.workdir, flagWorkdir, "w", "", "Working directory inside the container")
 	flags.StringVarP(&opts.user, flagUser, "u", "", "Username or UID (format: <name|uid>[:<group|gid>])")
@@ -764,6 +769,8 @@ func addServiceFlags(flags *pflag.FlagSet, opts *serviceOptions, defaultFlagValu
 
 	flags.Var(&opts.stopGrace, flagStopGracePeriod, flagDesc(flagStopGracePeriod, "Time to wait before force killing a container (ns|us|ms|s|m|h)"))
 	flags.Var(&opts.replicas, flagReplicas, "Number of tasks")
+	flags.Uint64Var(&opts.maxReplicas, flagMaxReplicas, defaultFlagValues.getUint64(flagMaxReplicas), "Maximum number of tasks per node (default 0 = unlimited)")
+	flags.SetAnnotation(flagMaxReplicas, "version", []string{"1.40"})
 
 	flags.StringVar(&opts.restartPolicy.condition, flagRestartCondition, "", flagDesc(flagRestartCondition, `Restart when condition is met ("none"|"on-failure"|"any")`))
 	flags.Var(&opts.restartPolicy.delay, flagRestartDelay, flagDesc(flagRestartDelay, "Delay between restart attempts (ns|us|ms|s|m|h)"))
@@ -825,6 +832,8 @@ func addServiceFlags(flags *pflag.FlagSet, opts *serviceOptions, defaultFlagValu
 
 	flags.StringVar(&opts.stopSignal, flagStopSignal, "", "Signal to stop the container")
 	flags.SetAnnotation(flagStopSignal, "version", []string{"1.28"})
+	flags.StringVar(&opts.isolation, flagIsolation, "", "Service container isolation mode")
+	flags.SetAnnotation(flagIsolation, "version", []string{"1.35"})
 }
 
 const (
@@ -838,6 +847,7 @@ const (
 	flagContainerLabel          = "container-label"
 	flagContainerLabelRemove    = "container-label-rm"
 	flagContainerLabelAdd       = "container-label-add"
+	flagDetach                  = "detach"
 	flagDNS                     = "dns"
 	flagDNSRemove               = "dns-rm"
 	flagDNSAdd                  = "dns-add"
@@ -849,22 +859,25 @@ const (
 	flagDNSSearchAdd            = "dns-search-add"
 	flagEndpointMode            = "endpoint-mode"
 	flagEntrypoint              = "entrypoint"
-	flagHost                    = "host"
-	flagHostAdd                 = "host-add"
-	flagHostRemove              = "host-rm"
-	flagHostname                = "hostname"
 	flagEnv                     = "env"
 	flagEnvFile                 = "env-file"
 	flagEnvRemove               = "env-rm"
 	flagEnvAdd                  = "env-add"
+	flagGenericResourcesRemove  = "generic-resource-rm"
+	flagGenericResourcesAdd     = "generic-resource-add"
 	flagGroup                   = "group"
 	flagGroupAdd                = "group-add"
 	flagGroupRemove             = "group-rm"
+	flagHost                    = "host"
+	flagHostAdd                 = "host-add"
+	flagHostRemove              = "host-rm"
+	flagHostname                = "hostname"
 	flagLabel                   = "label"
 	flagLabelRemove             = "label-rm"
 	flagLabelAdd                = "label-add"
 	flagLimitCPU                = "limit-cpu"
 	flagLimitMemory             = "limit-memory"
+	flagMaxReplicas             = "replicas-max-per-node"
 	flagMode                    = "mode"
 	flagMount                   = "mount"
 	flagMountRemove             = "mount-rm"
@@ -876,6 +889,7 @@ const (
 	flagPublish                 = "publish"
 	flagPublishRemove           = "publish-rm"
 	flagPublishAdd              = "publish-add"
+	flagQuiet                   = "quiet"
 	flagReadOnly                = "read-only"
 	flagReplicas                = "replicas"
 	flagReserveCPU              = "reserve-cpu"
@@ -884,12 +898,17 @@ const (
 	flagRestartDelay            = "restart-delay"
 	flagRestartMaxAttempts      = "restart-max-attempts"
 	flagRestartWindow           = "restart-window"
+	flagRollback                = "rollback"
 	flagRollbackDelay           = "rollback-delay"
 	flagRollbackFailureAction   = "rollback-failure-action"
 	flagRollbackMaxFailureRatio = "rollback-max-failure-ratio"
 	flagRollbackMonitor         = "rollback-monitor"
 	flagRollbackOrder           = "rollback-order"
 	flagRollbackParallelism     = "rollback-parallelism"
+	flagInit                    = "init"
+	flagSysCtl                  = "sysctl"
+	flagSysCtlAdd               = "sysctl-add"
+	flagSysCtlRemove            = "sysctl-rm"
 	flagStopGracePeriod         = "stop-grace-period"
 	flagStopSignal              = "stop-signal"
 	flagTTY                     = "tty"
@@ -917,4 +936,14 @@ const (
 	flagConfig                  = "config"
 	flagConfigAdd               = "config-add"
 	flagConfigRemove            = "config-rm"
+	flagIsolation               = "isolation"
 )
+
+func validateAPIVersion(c swarm.ServiceSpec, serverAPIVersion string) error {
+	for _, m := range c.TaskTemplate.ContainerSpec.Mounts {
+		if m.BindOptions != nil && m.BindOptions.NonRecursive && versions.LessThan(serverAPIVersion, "1.40") {
+			return errors.Errorf("bind-nonrecursive requires API v1.40 or later")
+		}
+	}
+	return nil
+}

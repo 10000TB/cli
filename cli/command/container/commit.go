@@ -1,6 +1,7 @@
 package container
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/docker/cli/cli"
@@ -8,7 +9,6 @@ import (
 	"github.com/docker/cli/opts"
 	"github.com/docker/docker/api/types"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
 type commitOptions struct {
@@ -22,7 +22,7 @@ type commitOptions struct {
 }
 
 // NewCommitCommand creates a new cobra.Command for `docker commit`
-func NewCommitCommand(dockerCli *command.DockerCli) *cobra.Command {
+func NewCommitCommand(dockerCli command.Cli) *cobra.Command {
 	var options commitOptions
 
 	cmd := &cobra.Command{
@@ -51,7 +51,7 @@ func NewCommitCommand(dockerCli *command.DockerCli) *cobra.Command {
 	return cmd
 }
 
-func runCommit(dockerCli *command.DockerCli, options *commitOptions) error {
+func runCommit(dockerCli command.Cli, options *commitOptions) error {
 	ctx := context.Background()
 
 	name := options.container

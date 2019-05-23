@@ -1,15 +1,14 @@
 package swarm
 
 import (
-	"bytes"
 	"io/ioutil"
 	"strings"
 	"testing"
 
-	"github.com/docker/cli/cli/internal/test"
-	"github.com/docker/docker/pkg/testutil"
+	"github.com/docker/cli/internal/test"
 	"github.com/pkg/errors"
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
 )
 
 func TestSwarmLeaveErrors(t *testing.T) {
@@ -22,7 +21,7 @@ func TestSwarmLeaveErrors(t *testing.T) {
 		{
 			name:          "too-many-args",
 			args:          []string{"foo"},
-			expectedError: "accepts no argument(s)",
+			expectedError: "accepts no arguments",
 		},
 		{
 			name: "leave-failed",
@@ -33,21 +32,19 @@ func TestSwarmLeaveErrors(t *testing.T) {
 		},
 	}
 	for _, tc := range testCases {
-		buf := new(bytes.Buffer)
 		cmd := newLeaveCommand(
 			test.NewFakeCli(&fakeClient{
 				swarmLeaveFunc: tc.swarmLeaveFunc,
-			}, buf))
+			}))
 		cmd.SetArgs(tc.args)
 		cmd.SetOutput(ioutil.Discard)
-		testutil.ErrorContains(t, cmd.Execute(), tc.expectedError)
+		assert.ErrorContains(t, cmd.Execute(), tc.expectedError)
 	}
 }
 
 func TestSwarmLeave(t *testing.T) {
-	buf := new(bytes.Buffer)
-	cmd := newLeaveCommand(
-		test.NewFakeCli(&fakeClient{}, buf))
-	assert.NoError(t, cmd.Execute())
-	assert.Equal(t, "Node left the swarm.", strings.TrimSpace(buf.String()))
+	cli := test.NewFakeCli(&fakeClient{})
+	cmd := newLeaveCommand(cli)
+	assert.NilError(t, cmd.Execute())
+	assert.Check(t, is.Equal("Node left the swarm.", strings.TrimSpace(cli.OutBuffer().String())))
 }

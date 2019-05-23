@@ -5,91 +5,76 @@ import (
 
 	"github.com/docker/cli/cli"
 	"github.com/docker/cli/cli/command"
-	"github.com/docker/cli/cli/command/formatter"
-	"github.com/docker/cli/cli/compose/convert"
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/client"
-	"github.com/pkg/errors"
+	"github.com/docker/cli/cli/command/stack/formatter"
+	"github.com/docker/cli/cli/command/stack/kubernetes"
+	"github.com/docker/cli/cli/command/stack/options"
+	"github.com/docker/cli/cli/command/stack/swarm"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
+	"vbom.ml/util/sortorder"
 )
 
-type listOptions struct {
-	format string
-}
-
-func newListCommand(dockerCli *command.DockerCli) *cobra.Command {
-	opts := listOptions{}
+func newListCommand(dockerCli command.Cli, common *commonOptions) *cobra.Command {
+	opts := options.List{}
 
 	cmd := &cobra.Command{
-		Use:     "ls",
+		Use:     "ls [OPTIONS]",
 		Aliases: []string{"list"},
 		Short:   "List stacks",
 		Args:    cli.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runList(dockerCli, opts)
+			return RunList(cmd, dockerCli, opts, common.orchestrator)
 		},
 	}
 
 	flags := cmd.Flags()
-	flags.StringVar(&opts.format, "format", "", "Pretty-print stacks using a Go template")
+	flags.StringVar(&opts.Format, "format", "", "Pretty-print stacks using a Go template")
+	flags.StringSliceVar(&opts.Namespaces, "namespace", []string{}, "Kubernetes namespaces to use")
+	flags.SetAnnotation("namespace", "kubernetes", nil)
+	flags.BoolVarP(&opts.AllNamespaces, "all-namespaces", "", false, "List stacks from all Kubernetes namespaces")
+	flags.SetAnnotation("all-namespaces", "kubernetes", nil)
 	return cmd
 }
 
-func runList(dockerCli *command.DockerCli, opts listOptions) error {
-	client := dockerCli.Client()
-	ctx := context.Background()
-
-	stacks, err := getStacks(ctx, client)
-	if err != nil {
-		return err
+// RunList performs a stack list against the specified orchestrator
+func RunList(cmd *cobra.Command, dockerCli command.Cli, opts options.List, orchestrator command.Orchestrator) error {
+	stacks := []*formatter.Stack{}
+	if orchestrator.HasSwarm() {
+		ss, err := swarm.GetStacks(dockerCli)
+		if err != nil {
+			return err
+		}
+		stacks = append(stacks, ss...)
 	}
-	format := opts.format
-	if len(format) == 0 {
-		format = formatter.TableFormatKey
+	if orchestrator.HasKubernetes() {
+		kubeCli, err := kubernetes.WrapCli(dockerCli, kubernetes.NewOptions(cmd.Flags(), orchestrator))
+		if err != nil {
+			return err
+		}
+		ss, err := kubernetes.GetStacks(kubeCli, opts)
+		if err != nil {
+			return err
+		}
+		stacks = append(stacks, ss...)
+	}
+	return format(dockerCli, opts, orchestrator, stacks)
+}
+
+func format(dockerCli command.Cli, opts options.List, orchestrator command.Orchestrator, stacks []*formatter.Stack) error {
+	format := opts.Format
+	if format == "" || format == formatter.TableFormatKey {
+		format = formatter.SwarmStackTableFormat
+		if orchestrator.HasKubernetes() {
+			format = formatter.KubernetesStackTableFormat
+		}
 	}
 	stackCtx := formatter.Context{
 		Output: dockerCli.Out(),
-		Format: formatter.NewStackFormat(format),
+		Format: formatter.Format(format),
 	}
-	sort.Sort(byName(stacks))
+	sort.Slice(stacks, func(i, j int) bool {
+		return sortorder.NaturalLess(stacks[i].Name, stacks[j].Name) ||
+			!sortorder.NaturalLess(stacks[j].Name, stacks[i].Name) &&
+				sortorder.NaturalLess(stacks[j].Namespace, stacks[i].Namespace)
+	})
 	return formatter.StackWrite(stackCtx, stacks)
-}
-
-type byName []*formatter.Stack
-
-func (n byName) Len() int           { return len(n) }
-func (n byName) Swap(i, j int)      { n[i], n[j] = n[j], n[i] }
-func (n byName) Less(i, j int) bool { return n[i].Name < n[j].Name }
-
-func getStacks(ctx context.Context, apiclient client.APIClient) ([]*formatter.Stack, error) {
-	services, err := apiclient.ServiceList(
-		ctx,
-		types.ServiceListOptions{Filters: getAllStacksFilter()})
-	if err != nil {
-		return nil, err
-	}
-	m := make(map[string]*formatter.Stack, 0)
-	for _, service := range services {
-		labels := service.Spec.Labels
-		name, ok := labels[convert.LabelNamespace]
-		if !ok {
-			return nil, errors.Errorf("cannot get label %s for service %s",
-				convert.LabelNamespace, service.ID)
-		}
-		ztack, ok := m[name]
-		if !ok {
-			m[name] = &formatter.Stack{
-				Name:     name,
-				Services: 1,
-			}
-		} else {
-			ztack.Services++
-		}
-	}
-	var stacks []*formatter.Stack
-	for _, stack := range m {
-		stacks = append(stacks, stack)
-	}
-	return stacks, nil
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -10,46 +11,49 @@ import (
 	"github.com/docker/cli/opts"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/pkg/system"
-	runconfigopts "github.com/docker/docker/runconfig/opts"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/context"
 )
 
-type createOptions struct {
-	name   string
-	file   string
-	labels opts.ListOpts
+// CreateOptions specifies some options that are used when creating a config.
+type CreateOptions struct {
+	Name           string
+	TemplateDriver string
+	File           string
+	Labels         opts.ListOpts
 }
 
 func newConfigCreateCommand(dockerCli command.Cli) *cobra.Command {
-	createOpts := createOptions{
-		labels: opts.NewListOpts(opts.ValidateEnv),
+	createOpts := CreateOptions{
+		Labels: opts.NewListOpts(opts.ValidateLabel),
 	}
 
 	cmd := &cobra.Command{
 		Use:   "create [OPTIONS] CONFIG file|-",
-		Short: "Create a configuration file from a file or STDIN as content",
+		Short: "Create a config from a file or STDIN",
 		Args:  cli.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			createOpts.name = args[0]
-			createOpts.file = args[1]
-			return runConfigCreate(dockerCli, createOpts)
+			createOpts.Name = args[0]
+			createOpts.File = args[1]
+			return RunConfigCreate(dockerCli, createOpts)
 		},
 	}
 	flags := cmd.Flags()
-	flags.VarP(&createOpts.labels, "label", "l", "Config labels")
+	flags.VarP(&createOpts.Labels, "label", "l", "Config labels")
+	flags.StringVar(&createOpts.TemplateDriver, "template-driver", "", "Template driver")
+	flags.SetAnnotation("template-driver", "version", []string{"1.37"})
 
 	return cmd
 }
 
-func runConfigCreate(dockerCli command.Cli, options createOptions) error {
+// RunConfigCreate creates a config with the given options.
+func RunConfigCreate(dockerCli command.Cli, options CreateOptions) error {
 	client := dockerCli.Client()
 	ctx := context.Background()
 
 	var in io.Reader = dockerCli.In()
-	if options.file != "-" {
-		file, err := system.OpenSequential(options.file)
+	if options.File != "-" {
+		file, err := system.OpenSequential(options.File)
 		if err != nil {
 			return err
 		}
@@ -59,17 +63,21 @@ func runConfigCreate(dockerCli command.Cli, options createOptions) error {
 
 	configData, err := ioutil.ReadAll(in)
 	if err != nil {
-		return errors.Errorf("Error reading content from %q: %v", options.file, err)
+		return errors.Errorf("Error reading content from %q: %v", options.File, err)
 	}
 
 	spec := swarm.ConfigSpec{
 		Annotations: swarm.Annotations{
-			Name:   options.name,
-			Labels: runconfigopts.ConvertKVStringsToMap(options.labels.GetAll()),
+			Name:   options.Name,
+			Labels: opts.ConvertKVStringsToMap(options.Labels.GetAll()),
 		},
 		Data: configData,
 	}
-
+	if options.TemplateDriver != "" {
+		spec.Templating = &swarm.Driver{
+			Name: options.TemplateDriver,
+		}
+	}
 	r, err := client.ConfigCreate(ctx, spec)
 	if err != nil {
 		return err
